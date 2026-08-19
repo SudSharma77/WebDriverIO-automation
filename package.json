@@ -1,0 +1,30 @@
+{
+  "name": "wdio-ai-test-lab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Prompt-to-test lab: describe a test case in English, get a verified WebdriverIO spec for Web, Android and iOS.",
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "dev": "concurrently -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "npm run dev --workspace server",
+    "dev:web": "npm run dev --workspace web",
+    "build": "npm run build --workspace server && npm run build --workspace web",
+    "start": "npm run start --workspace server",
+    "typecheck": "npm run typecheck --workspace server && npm run typecheck --workspace web",
+    "appium": "appium --allow-cors",
+    "appium:drivers": "appium driver install uiautomator2"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
+  }
+}
