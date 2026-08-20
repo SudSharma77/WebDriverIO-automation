@@ -4,6 +4,7 @@ import {
   cancelRun,
   createBatch,
   createRun,
+  extendRun,
   fetchCapabilities,
   fetchRun,
   reverifyLane,
@@ -132,6 +133,20 @@ export default function App() {
       setBatchSubmitting(false);
     }
   }, []);
+
+  const extend = useCallback(
+    async (platform: Parameters<typeof extendRun>[1], additionalPrompt: string) => {
+      if (!run) return;
+      setSubmitError(null);
+      try {
+        const { id, run: created } = await extendRun(run.id, platform, additionalPrompt);
+        watch(id, created);
+      } catch (err) {
+        setSubmitError(err instanceof Error ? err.message : "Could not start the extension.");
+      }
+    },
+    [run, watch],
+  );
 
   const openBatchRun = useCallback(
     (id: string) => {
@@ -269,7 +284,14 @@ export default function App() {
                 {run.order.map((platform) => {
                   const lane = run.lanes[platform];
                   return lane ? (
-                    <LaneCard key={platform} runId={run.id} lane={lane} onZoom={setZoom} onReverify={reverify} />
+                    <LaneCard
+                      key={platform}
+                      runId={run.id}
+                      lane={lane}
+                      onZoom={setZoom}
+                      onReverify={reverify}
+                      onExtend={extend}
+                    />
                   ) : null;
                 })}
               </div>

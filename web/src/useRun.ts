@@ -52,6 +52,14 @@ function applyToLane(lane: LaneState, event: RunEvent): LaneState {
         : { ...lane, specCode: event.code, specPath: event.path ?? lane.specPath };
     case "verify.log":
       return { ...lane, verifyLog: [...lane.verifyLog, event.line] };
+    case "lane.usage":
+      return {
+        ...lane,
+        usage: {
+          inputTokens: lane.usage.inputTokens + event.usage.inputTokens,
+          outputTokens: lane.usage.outputTokens + event.usage.outputTokens,
+        },
+      };
     default:
       return lane;
   }

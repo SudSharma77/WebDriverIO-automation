@@ -4,7 +4,7 @@ import { availableModels } from "../agent/llm/index.js";
 import { config } from "../config.js";
 import { buildProjectZip } from "../export.js";
 import { planFor } from "../lanes/capabilities.js";
-import { cancelRun, startRun } from "../orchestrator.js";
+import { cancelRun, startExtend, startRun } from "../orchestrator.js";
 import { verify } from "../runner/verify.js";
 import { store } from "../store.js";
 import { PLATFORMS, isPlatform, type RunEvent } from "../types.js";
@@ -174,6 +174,33 @@ export async function registerRunRoutes(app: FastifyInstance): Promise<void> {
       })();
 
       return reply.status(202).send({ started: true });
+    },
+  );
+
+  /**
+   * Extend an already-passing spec with additional steps, as a new run built
+   * on the old one: the original steps are replayed mechanically (no AI
+   * cost) to reach the same end state, and only the additional part actually
+   * spends tokens on exploration and generation.
+   */
+  app.post<{ Params: { id: string; platform: string } }>(
+    "/api/runs/:id/:platform/extend",
+    async (request, reply) => {
+      const { id, platform } = request.params;
+      if (!isPlatform(platform)) return reply.status(400).send({ error: "unknown_platform" });
+
+      const parsed = z.object({ additionalPrompt: z.string().trim().min(10).max(4000) }).safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: "invalid_request",
+          issues: parsed.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
+        });
+      }
+
+      const result = startExtend(id, platform, parsed.data.additionalPrompt);
+      if ("error" in result) return reply.status(400).send({ error: result.error });
+
+      return reply.status(201).send({ id: result.run.id, run: result.run });
     },
   );
 

@@ -69,6 +69,20 @@ export async function reverifyLane(id: string, platform: Platform): Promise<void
   if (!res.ok) throw new ApiError(`Could not start the regression check (${res.status}).`);
 }
 
+/** Build on an already-passing lane with additional steps, as a new run. */
+export async function extendRun(
+  id: string,
+  platform: Platform,
+  additionalPrompt: string,
+): Promise<{ id: string; run: RunState }> {
+  const res = await fetch(`/api/runs/${id}/${platform}/extend`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ additionalPrompt }),
+  });
+  return parse<{ id: string; run: RunState }>(res);
+}
+
 export function specDownloadUrl(runId: string, platform: Platform): string {
   return `/api/runs/${runId}/${platform}/spec`;
 }

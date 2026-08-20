@@ -7,6 +7,7 @@ import type {
   LlmToolResult,
   LlmTurn,
   StopReason,
+  TokenUsage,
 } from "./types.js";
 
 export interface AnthropicProviderOptions {
@@ -61,7 +62,7 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): LlmProv
         system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
         messages: turns.map((t) => ({ role: t.role, content: t.text })),
       });
-      return textOf(response);
+      return { text: textOf(response), usage: usageOf(response) };
     },
 
     describeError(err) {
@@ -127,6 +128,7 @@ function toTurn(response: Anthropic.Message): LlmTurn {
     toolCalls,
     stopReason: mapStop(response.stop_reason, toolCalls.length > 0),
     refusalReason: response.stop_details?.explanation ?? undefined,
+    usage: usageOf(response),
   };
 }
 
@@ -152,6 +154,15 @@ function textOf(response: Anthropic.Message): string {
     .map((b) => b.text)
     .join("\n")
     .trim();
+}
+
+/** Cache read/write tokens count toward input for display purposes - they're still input tokens, just cheaper ones. */
+function usageOf(response: Anthropic.Message): TokenUsage {
+  const usage = response.usage;
+  return {
+    inputTokens: usage.input_tokens + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0),
+    outputTokens: usage.output_tokens,
+  };
 }
 
 type MediaType = "image/png" | "image/jpeg" | "image/webp" | "image/gif";

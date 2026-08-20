@@ -1,8 +1,19 @@
 import { config } from "../config.js";
 import { lintSpec } from "./lint.js";
 import { llm, llmFallback } from "./llm/index.js";
-import type { CompleteTurn } from "./llm/types.js";
-import { FAILURE_SUMMARY_SYSTEM, SCAFFOLD_SYSTEM, SYNTH_SYSTEM, failureSummaryTask, scaffoldTask, synthTask } from "./prompts.js";
+import type { CompleteTurn, TokenUsage } from "./llm/types.js";
+import { addUsage, emptyUsage } from "./llm/types.js";
+import {
+  EXTEND_SCAFFOLD_SYSTEM,
+  FAILURE_SUMMARY_SYSTEM,
+  SCAFFOLD_SYSTEM,
+  SYNTH_SYSTEM,
+  extendScaffoldTask,
+  extendSynthTask,
+  failureSummaryTask,
+  scaffoldTask,
+  synthTask,
+} from "./prompts.js";
 import type { LanePlan } from "../lanes/capabilities.js";
 import type { Platform } from "../types.js";
 
@@ -21,10 +32,16 @@ export interface SynthArgs {
  * same fixed template either way, rather than the code model free-associating
  * structure straight out of a possibly-terse transcript.
  */
-export async function synthesizeSpec(args: SynthArgs): Promise<string> {
-  const scaffold = await generateScaffold(args);
-  const text = await complete(SYNTH_SYSTEM, [{ role: "user", text: synthTask({ ...args, scaffold }) }]);
-  let code = guardSpec(extractCode(text));
+export async function synthesizeSpec(args: SynthArgs): Promise<{ code: string; usage: TokenUsage }> {
+  let usage = emptyUsage();
+
+  const scaffoldResult = await generateScaffold(args);
+  usage = addUsage(usage, scaffoldResult.usage);
+  const scaffold = scaffoldResult.scaffold;
+
+  const first = await complete(SYNTH_SYSTEM, [{ role: "user", text: synthTask({ ...args, scaffold }) }]);
+  usage = addUsage(usage, first.usage);
+  let code = guardSpec(extractCode(first.text));
 
   // Deterministic quality gate: a prose rule in SYNTH_SYSTEM can be ignored: a
   // lint rule can't be. eslint-plugin-wdio's rules aren't auto-fixable, so a
@@ -32,16 +49,94 @@ export async function synthesizeSpec(args: SynthArgs): Promise<string> {
   // silently never actually asserts anything) gets one targeted repair call.
   const lint = await lintSpec(code);
   if (lint.issues.length > 0) {
-    code = await fixLintIssues({ ...args, spec: code, scaffold, issues: lint.issues });
+    const fixed = await fixLintIssues({ ...args, spec: code, scaffold, issues: lint.issues });
+    usage = addUsage(usage, fixed.usage);
+    code = fixed.code;
   }
 
-  return withScaffoldHeader(code, scaffold);
+  return { code: withScaffoldHeader(code, scaffold), usage };
+}
+
+export interface ExtendArgs {
+  additionalPrompt: string;
+  platform: Platform;
+  plan: LanePlan;
+  /** Transcript of the ADDITIONAL exploration only, not the original scenario's. */
+  transcript: string;
+  recorded: string | null;
+  /** The base run's full spec, including its scaffold header. */
+  existingCode: string;
+}
+
+/**
+ * Builds on an already-passing spec instead of regenerating one from
+ * scratch. The token saving is structural, not cosmetic: the original steps
+ * never re-enter an LLM call as input, because the original plan and code
+ * are given as fixed context the model must not repeat, not text it has to
+ * re-derive or re-emit reasoning about.
+ */
+export async function extendSpec(args: ExtendArgs): Promise<{ code: string; usage: TokenUsage }> {
+  let usage = emptyUsage();
+
+  const originalScaffold = extractScaffoldHeader(args.existingCode);
+  if (!originalScaffold) {
+    throw new Error("The base spec has no structured-plan header to extend from — it may predate the structure phase.");
+  }
+  const existingCode = stripScaffoldHeader(args.existingCode);
+
+  const scaffoldDelta = await complete(EXTEND_SCAFFOLD_SYSTEM, [
+    { role: "user", text: extendScaffoldTask({ ...args, originalScaffold }) },
+  ]);
+  usage = addUsage(usage, scaffoldDelta.usage);
+  const newSteps = scaffoldDelta.text.trim();
+  if (!newSteps) throw new Error("The model returned no additional plan steps.");
+
+  const mergedScaffold = `${originalScaffold}\n${newSteps}`;
+
+  const first = await complete(SYNTH_SYSTEM, [
+    { role: "user", text: extendSynthTask({ ...args, mergedScaffold, existingCode }) },
+  ]);
+  usage = addUsage(usage, first.usage);
+  let code = guardSpec(extractCode(first.text));
+
+  const lint = await lintSpec(code);
+  if (lint.issues.length > 0) {
+    const fixed = await fixExtendLintIssues({ ...args, mergedScaffold, existingCode, spec: code, issues: lint.issues });
+    usage = addUsage(usage, fixed.usage);
+    code = fixed.code;
+  }
+
+  return { code: withScaffoldHeader(code, mergedScaffold), usage };
+}
+
+async function fixExtendLintIssues(
+  args: ExtendArgs & { mergedScaffold: string; existingCode: string; spec: string; issues: string[] },
+): Promise<{ code: string; usage: TokenUsage }> {
+  const result = await complete(SYNTH_SYSTEM, [
+    { role: "user", text: extendSynthTask(args) },
+    { role: "assistant", text: "```javascript\n" + args.spec + "\n```" },
+    {
+      role: "user",
+      text: [
+        "A deterministic lint pass (eslint-plugin-wdio) found real issues in that file:",
+        "",
+        args.issues.map((i) => `- ${i}`).join("\n"),
+        "",
+        "Fix ONLY these issues — do not change the plan, the selectors, or the assertions otherwise. Emit the corrected full file in one ```javascript block, nothing else.",
+      ].join("\n"),
+    },
+  ]);
+  return { code: guardSpec(extractCode(result.text)), usage: result.usage };
+}
+
+function stripScaffoldHeader(code: string): string {
+  return code.replace(/^\/\*\*\n[\s\S]*?\n \*\/\n/, "").trimStart();
 }
 
 async function fixLintIssues(
   args: SynthArgs & { spec: string; scaffold: string; issues: string[] },
-): Promise<string> {
-  const text = await complete(SYNTH_SYSTEM, [
+): Promise<{ code: string; usage: TokenUsage }> {
+  const result = await complete(SYNTH_SYSTEM, [
     { role: "user", text: synthTask(args) },
     { role: "assistant", text: "```javascript\n" + args.spec + "\n```" },
     {
@@ -55,14 +150,14 @@ async function fixLintIssues(
       ].join("\n"),
     },
   ]);
-  return guardSpec(extractCode(text));
+  return { code: guardSpec(extractCode(result.text)), usage: result.usage };
 }
 
-async function generateScaffold(args: SynthArgs): Promise<string> {
-  const text = await complete(SCAFFOLD_SYSTEM, [{ role: "user", text: scaffoldTask(args) }]);
-  const scaffold = text.trim();
+async function generateScaffold(args: SynthArgs): Promise<{ scaffold: string; usage: TokenUsage }> {
+  const result = await complete(SCAFFOLD_SYSTEM, [{ role: "user", text: scaffoldTask(args) }]);
+  const scaffold = result.text.trim();
   if (!scaffold) throw new Error("The model returned no structured plan.");
-  return scaffold;
+  return { scaffold, usage: result.usage };
 }
 
 /** Bakes the plan into the file as a comment, so the structure is visible in the artifact itself, not just in a log somewhere. */
@@ -85,7 +180,9 @@ function withScaffoldHeader(code: string, scaffold: string): string {
  */
 export async function repairSpec(
   args: SynthArgs & { spec: string; failure: string; domSnapshot?: string },
-): Promise<string> {
+): Promise<{ code: string; usage: TokenUsage }> {
+  let usage = emptyUsage();
+
   const parts = [
     "That spec failed when replayed by the WebdriverIO runner. Output from the run:",
     "",
@@ -113,14 +210,21 @@ export async function repairSpec(
   // The plan already lives in the header this file was generated with (see
   // withScaffoldHeader) - reuse it rather than re-running the structure phase,
   // which could quietly change the plan mid-repair.
-  const scaffold = extractScaffoldHeader(args.spec) ?? (await generateScaffold(args));
+  let scaffold = extractScaffoldHeader(args.spec);
+  if (!scaffold) {
+    const generated = await generateScaffold(args);
+    usage = addUsage(usage, generated.usage);
+    scaffold = generated.scaffold;
+  }
 
-  const text = await complete(SYNTH_SYSTEM, [
+  const result = await complete(SYNTH_SYSTEM, [
     { role: "user", text: synthTask({ ...args, scaffold }) },
     { role: "assistant", text: "```javascript\n" + args.spec + "\n```" },
     { role: "user", text: parts.join("\n") },
   ]);
-  return guardSpec(extractCode(text));
+  usage = addUsage(usage, result.usage);
+
+  return { code: guardSpec(extractCode(result.text)), usage };
 }
 
 function extractScaffoldHeader(code: string): string | null {
@@ -143,16 +247,16 @@ export async function summarizeFailure(args: {
   prompt: string;
   failure: string;
   domSnapshot?: string;
-}): Promise<string | null> {
+}): Promise<{ summary: string | null; usage: TokenUsage }> {
   try {
-    const text = await complete(FAILURE_SUMMARY_SYSTEM, [{ role: "user", text: failureSummaryTask(args) }]);
-    return text.trim() || null;
+    const result = await complete(FAILURE_SUMMARY_SYSTEM, [{ role: "user", text: failureSummaryTask(args) }]);
+    return { summary: result.text.trim() || null, usage: result.usage };
   } catch {
-    return null;
+    return { summary: null, usage: emptyUsage() };
   }
 }
 
-async function complete(system: string, turns: CompleteTurn[]): Promise<string> {
+async function complete(system: string, turns: CompleteTurn[]): Promise<{ text: string; usage: TokenUsage }> {
   try {
     return await llm.complete({ system, turns, maxTokens: config.SYNTH_MAX_OUTPUT_TOKENS });
   } catch (err) {

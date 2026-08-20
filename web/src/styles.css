@@ -643,6 +643,11 @@ legend {
   font-family: var(--font-mono);
 }
 
+.token-badge {
+  cursor: help;
+  border-bottom: 1px dotted var(--text-faint);
+}
+
 .lane__head-right {
   margin-left: auto;
 }
@@ -1041,6 +1046,20 @@ kbd,
   flex-wrap: wrap;
   gap: var(--space-2);
   margin-bottom: var(--space-2);
+}
+
+.extend-form {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-sunken);
+}
+
+.extend-form .btn {
+  justify-self: start;
 }
 
 /* Spec syntax highlighting - a handful of token classes, not a real grammar. */

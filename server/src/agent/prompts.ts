@@ -164,6 +164,95 @@ export function failureSummaryTask(args: { prompt: string; failure: string; domS
   return parts.join("\n");
 }
 
+/**
+ * Frozen. Used only when extending an already-passing spec with additional
+ * steps. A smaller, targeted sibling of SCAFFOLD_SYSTEM: the old plan is
+ * given as fixed context, so this only has to describe what's new - it must
+ * not repeat or restate the existing Steps/Expected Result lines, both to
+ * save output tokens and because re-deriving them risks silently drifting
+ * from what was actually verified before.
+ */
+export const EXTEND_SCAFFOLD_SYSTEM = `You extend an existing structured test plan with new steps, from a transcript of additional exploration performed after the original scenario finished.
+
+You receive the ORIGINAL plan (already verified, do not repeat or rephrase it) and a transcript of what the agent did for the NEW, additional part only.
+
+Output ONLY the new lines to append, in this exact shape:
+
+Steps (continued):
+<N+1>. <one user-observable action, imperative mood>
+<N+2>. ...
+Expected Result (additional):
+- <one specific, checkable assertion>
+
+Where N is the number of steps already in the original plan (continue numbering from there). Rules:
+- Every new step must be something that actually happened in the new transcript. Never invent one.
+- Do not restate, renumber, or rephrase any step from the original plan - only add what is new.
+- Every new Expected Result line must be checkable with a real assertion, not a vague claim.
+- Respond with ONLY the two sections above. No preamble, no code.`;
+
+export function extendScaffoldTask(args: {
+  additionalPrompt: string;
+  platform: Platform;
+  plan: LanePlan;
+  originalScaffold: string;
+  transcript: string;
+}): string {
+  return [
+    `Platform: ${args.platform}`,
+    `Target: ${args.plan.entryPoint}`,
+    "",
+    "Original plan (already verified - do not repeat):",
+    args.originalScaffold,
+    "",
+    "Additional scenario to extend it with:",
+    args.additionalPrompt.trim(),
+    "",
+    "Transcript of the additional exploration:",
+    args.transcript,
+  ].join("\n");
+}
+
+export function extendSynthTask(args: {
+  additionalPrompt: string;
+  platform: Platform;
+  plan: LanePlan;
+  mergedScaffold: string;
+  existingCode: string;
+  transcript: string;
+  recorded: string | null;
+}): string {
+  const parts = [
+    `Platform: ${args.platform}`,
+    `Target: ${args.plan.entryPoint}`,
+    "",
+    "This is an EXTENSION of an already-passing spec, not a fresh one. The merged plan below includes the original steps (already implemented and verified) plus new ones just added:",
+    args.mergedScaffold,
+    "",
+    "Existing file — keep every line of this exactly as it is; add the new steps at the end of the same it() block, immediately before its closing lines:",
+    "```javascript",
+    args.existingCode,
+    "```",
+    "",
+    "Additional scenario that was just explored (implement only this as new code):",
+    args.additionalPrompt.trim(),
+    "",
+    "Transcript of the additional exploration only:",
+    args.transcript,
+  ];
+
+  if (args.recorded) {
+    parts.push(
+      "",
+      "Raw code recorded by the MCP server for the additional exploration (session boilerplate included — strip it, keep the interactions):",
+      "```javascript",
+      args.recorded,
+      "```",
+    );
+  }
+
+  return parts.join("\n");
+}
+
 export function synthTask(args: {
   prompt: string;
   platform: Platform;

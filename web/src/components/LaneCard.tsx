@@ -5,6 +5,7 @@ import { highlightJs } from "../highlight";
 import { PLATFORM_GLYPH, PLATFORM_LABEL, type LaneState, type Platform } from "../types";
 import { PhaseRail } from "./PhaseRail";
 import { StatusPill } from "./StatusPill";
+import { TokenBadge } from "./TokenBadge";
 
 type TabKey = "steps" | "screens" | "spec" | "logs";
 
@@ -20,9 +21,10 @@ interface Props {
   lane: LaneState;
   onZoom: (dataUrl: string) => void;
   onReverify: (platform: Platform) => void;
+  onExtend: (platform: Platform, additionalPrompt: string) => void;
 }
 
-export function LaneCard({ runId, lane, onZoom, onReverify }: Props) {
+export function LaneCard({ runId, lane, onZoom, onReverify, onExtend }: Props) {
   const [tab, setTab] = useState<TabKey>("steps");
   const baseId = useId();
   const tablistRef = useRef<HTMLDivElement>(null);
@@ -68,6 +70,8 @@ export function LaneCard({ runId, lane, onZoom, onReverify }: Props) {
           <div className="lane__meta">
             {lane.toolCallCount} action{lane.toolCallCount === 1 ? "" : "s"}
             {lane.startedAt && lane.finishedAt ? ` · ${Math.round((lane.finishedAt - lane.startedAt) / 1000)}s` : ""}
+            {" "}
+            <TokenBadge usage={lane.usage} />
           </div>
         </div>
         <div className="lane__head-right">
@@ -111,7 +115,9 @@ export function LaneCard({ runId, lane, onZoom, onReverify }: Props) {
       >
         {tab === "steps" && <Steps lane={lane} />}
         {tab === "screens" && <Screens lane={lane} onZoom={onZoom} />}
-        {tab === "spec" && <Spec runId={runId} lane={lane} />}
+        {tab === "spec" && (
+          <Spec runId={runId} lane={lane} onExtend={(text) => onExtend(lane.platform, text)} />
+        )}
         {tab === "logs" && <Logs lane={lane} onReverify={() => onReverify(lane.platform)} />}
       </div>
     </section>
@@ -172,10 +178,12 @@ function Screens({ lane, onZoom }: { lane: LaneState; onZoom: (dataUrl: string) 
   );
 }
 
-function Spec({ runId, lane }: { runId: string; lane: LaneState }) {
+function Spec({ runId, lane, onExtend }: { runId: string; lane: LaneState; onExtend: (text: string) => void }) {
   const [copied, setCopied] = useState(false);
   const hasDiff = !!lane.previousSpecCode && lane.previousSpecCode !== lane.specCode;
   const [showDiff, setShowDiff] = useState(hasDiff);
+  const [extending, setExtending] = useState(false);
+  const [extendText, setExtendText] = useState("");
 
   if (!lane.specCode) {
     return (
@@ -196,6 +204,16 @@ function Spec({ runId, lane }: { runId: string; lane: LaneState }) {
     }
   };
 
+  const canExtend = lane.status === "passed";
+
+  const submitExtend = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (extendText.trim().length < 10) return;
+    onExtend(extendText.trim());
+    setExtendText("");
+    setExtending(false);
+  };
+
   return (
     <>
       <div className="panel-actions">
@@ -213,7 +231,30 @@ function Spec({ runId, lane }: { runId: string; lane: LaneState }) {
         <a className="btn btn--ghost" href={projectDownloadUrl(runId, lane.platform)} download>
           Export project (.zip)
         </a>
+        {canExtend && (
+          <button className="btn btn--ghost" type="button" onClick={() => setExtending((v) => !v)}>
+            {extending ? "Cancel" : "Extend this test"}
+          </button>
+        )}
       </div>
+      {canExtend && extending && (
+        <form className="extend-form" onSubmit={submitExtend}>
+          <textarea
+            className="textarea"
+            rows={2}
+            value={extendText}
+            onChange={(e) => setExtendText(e.target.value)}
+            placeholder="Add more steps to this scenario — e.g. Then also verify the total price updates."
+            autoFocus
+          />
+          <p className="field__hint">
+            The existing steps replay for free (no AI cost); only this additional part spends tokens.
+          </p>
+          <button className="btn btn--primary" type="submit" disabled={extendText.trim().length < 10}>
+            Run extension
+          </button>
+        </form>
+      )}
       {showDiff && hasDiff ? (
         <SpecDiff before={lane.previousSpecCode!} after={lane.specCode} />
       ) : (

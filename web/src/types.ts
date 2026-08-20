@@ -34,6 +34,12 @@ export interface Screenshot {
   caption?: string;
 }
 
+/** Just the two numbers every provider's billing actually keys off. */
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface LaneState {
   platform: Platform;
   status: LaneStatus;
@@ -50,6 +56,8 @@ export interface LaneState {
   startedAt?: number;
   finishedAt?: number;
   toolCallCount: number;
+  /** Running total across every LLM call this lane has made so far. */
+  usage: TokenUsage;
   /** Client-side only: the agent's running narration. */
   narration?: string[];
 }
@@ -123,6 +131,8 @@ export type RunEvent =
   | { type: "screenshot"; platform: Platform; shot: Screenshot }
   | { type: "artifact"; platform: Platform; kind: "recorded" | "spec"; code: string; path?: string }
   | { type: "verify.log"; platform: Platform; line: string }
+  /** A delta to add to the lane's running total, not the total itself. */
+  | { type: "lane.usage"; platform: Platform; usage: TokenUsage }
   | { type: "run.done"; runId: string }
   | { type: "error"; platform?: Platform; message: string };
 

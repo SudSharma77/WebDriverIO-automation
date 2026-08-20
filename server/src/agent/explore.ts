@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js";
 import { config } from "../config.js";
 import { llm, type LlmToolDef, type LlmToolResult } from "./llm/index.js";
+import { addUsage, emptyUsage, type TokenUsage } from "./llm/types.js";
 import { EXPLORER_SYSTEM, explorerTask } from "./prompts.js";
 import { coerceToolInput, convertToolResult } from "../mcp/bridge.js";
 import type { WdioMcp } from "../mcp/client.js";
@@ -22,6 +23,7 @@ export interface ExploreResult {
   finalText: string;
   /** True when the agent ran out of budget rather than finishing. */
   exhausted: boolean;
+  usage: TokenUsage;
 }
 
 export interface ExploreArgs {
@@ -61,6 +63,7 @@ export async function explore(args: ExploreArgs): Promise<ExploreResult> {
   const transcript: string[] = [];
   let next: string | LlmToolResult[] = explorerTask(prompt, platform, plan, siteSkim);
   let toolCalls = 0;
+  let usage = emptyUsage();
 
   for (;;) {
     signal.throwIfAborted();
@@ -71,13 +74,15 @@ export async function explore(args: ExploreArgs): Promise<ExploreResult> {
         conversation,
         `Tool budget exhausted (${budget} calls). Stop exploring now and write your final summary: did the scenario succeed, what steps did you perform, and what assertions prove the outcome?`,
       );
+      usage = addUsage(usage, closing.usage);
       if (closing.text) emit.text(closing.text);
       transcript.push(`\n[budget exhausted after ${budget} tool calls]`);
       if (closing.text) transcript.push(`\nAgent summary:\n${closing.text}`);
-      return { transcript: transcript.join("\n"), finalText: closing.text, exhausted: true };
+      return { transcript: transcript.join("\n"), finalText: closing.text, exhausted: true, usage };
     }
 
     const turn = await send(conversation, next);
+    usage = addUsage(usage, turn.usage);
 
     if (turn.stopReason === "refusal") {
       throw new Error(`The model declined to continue: ${turn.refusalReason ?? "no explanation given"}`);
@@ -93,7 +98,7 @@ export async function explore(args: ExploreArgs): Promise<ExploreResult> {
         transcript.push("\n[response truncated at max_tokens]");
       }
       transcript.push(`\nAgent summary:\n${turn.text}`);
-      return { transcript: transcript.join("\n"), finalText: turn.text, exhausted: false };
+      return { transcript: transcript.join("\n"), finalText: turn.text, exhausted: false, usage };
     }
 
     const results: LlmToolResult[] = [];

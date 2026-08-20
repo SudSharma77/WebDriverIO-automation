@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { deleteRun, loadAllRuns, saveRun } from "./persist.js";
-import type { CreateRunInput, LaneState, Platform, RunEvent, RunState } from "./types.js";
+import type { CreateRunInput, LaneState, Platform, RunEvent, RunState, RunTarget } from "./types.js";
 
 type Subscriber = (event: RunEvent) => void;
 
@@ -21,6 +21,12 @@ class RunStore {
   /** Load persisted runs before the server starts accepting requests. */
   async hydrate(): Promise<void> {
     for (const run of await loadAllRuns()) {
+      // A run.json written before token-usage tracking existed has no
+      // `usage` field on its lanes - backfill zero so #apply's arithmetic
+      // never hits undefined.
+      for (const lane of Object.values(run.lanes)) {
+        lane.usage ??= { inputTokens: 0, outputTokens: 0 };
+      }
       this.#runs.set(run.id, run);
       this.#log.set(run.id, []);
     }
@@ -43,6 +49,7 @@ class RunStore {
         screenshots: [],
         verifyLog: [],
         toolCallCount: 0,
+        usage: { inputTokens: 0, outputTokens: 0 },
       };
     }
 
@@ -73,6 +80,25 @@ class RunStore {
 
   lane(runId: string, platform: Platform): LaneState | undefined {
     return this.#runs.get(runId)?.lanes[platform];
+  }
+
+  /**
+   * Most recent prior run with the exact same prompt + target for this
+   * platform that produced a spec. The caller tries replaying that spec cold
+   * before paying for a fresh explore+synthesize - free and fast when the
+   * target hasn't changed, and only falls back to full generation when it
+   * genuinely no longer passes.
+   */
+  findCachedSpec(prompt: string, platform: Platform, target: RunTarget): string | null {
+    const key = fingerprint(prompt, platform, target);
+    if (!key) return null;
+
+    for (const run of this.list()) {
+      const lane = run.lanes[platform];
+      if (!lane?.specCode) continue;
+      if (fingerprint(run.prompt, platform, run.target) === key) return lane.specCode;
+    }
+    return null;
   }
 
   /** Replay for a client that subscribes after the run started. */
@@ -190,6 +216,12 @@ class RunStore {
         lane.verifyLog.push(event.line);
         if (lane.verifyLog.length > 2000) lane.verifyLog.splice(0, lane.verifyLog.length - 2000);
         break;
+      case "lane.usage":
+        lane.usage = {
+          inputTokens: lane.usage.inputTokens + event.usage.inputTokens,
+          outputTokens: lane.usage.outputTokens + event.usage.outputTokens,
+        };
+        break;
       default:
         break;
     }
@@ -203,6 +235,26 @@ class RunStore {
       void deleteRun(stale.id);
     }
   }
+}
+
+/**
+ * Normalized enough that trivial formatting differences (extra whitespace,
+ * casing, a trailing slash) don't defeat the cache, but nothing fuzzier -
+ * a genuinely different prompt should genuinely re-explore, not silently
+ * reuse a plausibly-similar old spec.
+ */
+function fingerprint(prompt: string, platform: Platform, target: RunTarget): string | null {
+  const normalizedPrompt = prompt.trim().toLowerCase().replace(/\s+/g, " ");
+  const targetValue =
+    platform === "web"
+      ? target.webUrl
+      : platform === "android"
+        ? target.androidApp
+        : target.iosApp;
+  if (!normalizedPrompt || !targetValue) return null;
+
+  const normalizedTarget = targetValue.trim().toLowerCase().replace(/\/+$/, "");
+  return `${platform}::${normalizedTarget}::${normalizedPrompt}`;
 }
 
 export const store = new RunStore();

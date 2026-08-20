@@ -38,6 +38,12 @@ export interface CreateRunInput {
   stabilityRuns?: number;
 }
 
+/** Just the two numbers every provider's billing actually keys off - deliberately not coupled to the LLM adapter's own copy of this shape. */
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface LaneState {
   platform: Platform;
   status: LaneStatus;
@@ -54,6 +60,8 @@ export interface LaneState {
   startedAt?: number;
   finishedAt?: number;
   toolCallCount: number;
+  /** Running total across every LLM call this lane has made so far - explore, structure, code, lint-fix, repair, failure summary. */
+  usage: TokenUsage;
 }
 
 export interface AgentStep {
@@ -120,5 +128,7 @@ export type RunEvent =
   | { type: "screenshot"; platform: Platform; shot: Screenshot }
   | { type: "artifact"; platform: Platform; kind: "recorded" | "spec"; code: string; path?: string }
   | { type: "verify.log"; platform: Platform; line: string }
+  /** A delta to add to the lane's running total, not the total itself - emitted once per LLM call site (explore, structure, code, repair, ...). */
+  | { type: "lane.usage"; platform: Platform; usage: TokenUsage }
   | { type: "run.done"; runId: string }
   | { type: "error"; platform?: Platform; message: string };
