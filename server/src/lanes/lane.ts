@@ -1,12 +1,13 @@
 import { config } from "../config.js";
 import { explore } from "../agent/explore.js";
-import { repairSpec, synthesizeSpec } from "../agent/synthesize.js";
+import { skimSite } from "../agent/siteSkim.js";
+import { repairSpec, summarizeFailure, synthesizeSpec } from "../agent/synthesize.js";
 import { selectTools, toLlmTools } from "../mcp/bridge.js";
 import { WdioMcp, errorMessage } from "../mcp/client.js";
 import { verify } from "../runner/verify.js";
 import { store } from "../store.js";
 import type { Platform, RunState } from "../types.js";
-import { planFor } from "./capabilities.js";
+import { planFor, type LanePlan } from "./capabilities.js";
 import { preflight } from "./preflight.js";
 
 export interface LaneArgs {
@@ -39,7 +40,8 @@ export async function runLane({ run, platform, signal }: LaneArgs): Promise<void
   try {
     mcp = await WdioMcp.launch(platform);
 
-    const tools = toLlmTools(selectTools(await mcp.listTools(), platform, config.llm.leanTools));
+    const mcpTools = selectTools(await mcp.listTools(), platform, config.llm.leanTools);
+    const tools = toLlmTools(mcpTools);
 
     // The lane owns session lifecycle, not the model - it must be opened before
     // the agent runs and closed before verify, so the device is free to replay.
@@ -55,15 +57,22 @@ export async function runLane({ run, platform, signal }: LaneArgs): Promise<void
       }
     }
 
+    // Cheap head start for the web lane: a static skim never blocks or fails
+    // the run, it just gives the explorer a rough map before it starts
+    // spending its live tool-call budget. No HTTP equivalent for a native app.
+    const siteSkim = platform === "web" && run.target.webUrl ? await skimSite(run.target.webUrl) : null;
+
     emit({ type: "lane.phase", platform, phase: "explore" });
     const exploration = await explore({
       mcp,
       tools,
+      mcpTools,
       prompt: run.prompt,
       platform,
       plan,
       budget: config.MAX_AGENT_STEPS,
       signal,
+      siteSkim,
       emit: {
         text: (text) => emit({ type: "agent.text", platform, text }),
         toolStarted: (step) => emit({ type: "agent.tool", platform, step }),
@@ -101,9 +110,22 @@ export async function runLane({ run, platform, signal }: LaneArgs): Promise<void
 
     if (!result.passed && !signal.aborted) {
       onLine("--- replay failed; attempting one repair pass ---");
-      spec = await repairSpec({ ...synthArgs, spec, failure: result.output });
+      spec = await repairSpec({ ...synthArgs, spec, failure: result.output, domSnapshot: result.domSnapshot });
       emit({ type: "artifact", platform, kind: "spec", code: spec });
       result = await verify({ runId, platform, plan, spec, onLine, signal });
+    }
+
+    let stabilityDetail: string | undefined;
+    if (result.passed && run.stabilityRuns > 0 && !signal.aborted) {
+      stabilityDetail = await checkStability({ runId, platform, plan, spec, stabilityRuns: run.stabilityRuns, onLine, signal });
+    }
+
+    // Only for a genuinely failed lane (post-repair) - a plain-English cause,
+    // cheap to generate, that saves opening the full verify log to find out
+    // why, especially useful scanning a batch of several results at once.
+    let failureSummary: string | null = null;
+    if (!result.passed && !signal.aborted) {
+      failureSummary = await summarizeFailure({ prompt: run.prompt, failure: result.output, domSnapshot: result.domSnapshot });
     }
 
     emit({ type: "artifact", platform, kind: "spec", code: spec, path: result.specPath });
@@ -113,10 +135,11 @@ export async function runLane({ run, platform, signal }: LaneArgs): Promise<void
       platform,
       status: result.passed ? "passed" : "failed",
       detail: result.passed
-        ? exploration.exhausted
-          ? "Passed, but the agent hit its tool budget - review that the scenario was fully covered."
-          : undefined
-        : (result.reason ?? "The generated spec did not pass replay."),
+        ? (stabilityDetail ??
+          (exploration.exhausted
+            ? "Passed, but the agent hit its tool budget - review that the scenario was fully covered."
+            : undefined))
+        : (failureSummary ?? result.reason ?? "The generated spec did not pass replay."),
     });
   } catch (err) {
     if (signal.aborted) {
@@ -129,6 +152,40 @@ export async function runLane({ run, platform, signal }: LaneArgs): Promise<void
   } finally {
     await mcp?.close();
   }
+}
+
+/**
+ * Re-run an already-passing spec cold, N more times, with no repair pass.
+ *
+ * A spec that only ran once proves it can pass, not that it reliably does -
+ * timing-dependent selectors (a native <select>'s options, an animation, a
+ * race with an API call) can pass by luck on a given try. This is the
+ * cheapest way to catch that before handing the file to a user who will
+ * commit it to CI.
+ */
+async function checkStability(args: {
+  runId: string;
+  platform: Platform;
+  plan: LanePlan;
+  spec: string;
+  stabilityRuns: number;
+  onLine: (line: string) => void;
+  signal: AbortSignal;
+}): Promise<string> {
+  const { runId, platform, plan, spec, stabilityRuns, onLine, signal } = args;
+  let passes = 1; // the run that got us here already passed once
+
+  for (let i = 1; i <= stabilityRuns; i++) {
+    if (signal.aborted) break;
+    onLine(`--- stability check: repeat ${i}/${stabilityRuns} ---`);
+    const repeat = await verify({ runId, platform, plan, spec, onLine, signal });
+    if (repeat.passed) passes++;
+  }
+
+  const total = 1 + stabilityRuns;
+  return passes === total
+    ? `Passed, and stable across ${total}/${total} cold runs.`
+    : `Passed, but only ${passes}/${total} cold runs succeeded - this spec is flaky. Look for a timing-dependent step (an unguarded click, a native dropdown, an animation) rather than trusting the first green run.`;
 }
 
 function firstText(content: Array<{ type: string; [k: string]: unknown }>): string {

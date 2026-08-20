@@ -79,6 +79,10 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): LlmProv
       }
       return err instanceof Error ? err.message : String(err);
     },
+
+    isRateLimited(err) {
+      return err instanceof Anthropic.RateLimitError;
+    },
   };
 
   return provider;

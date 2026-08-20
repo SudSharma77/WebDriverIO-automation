@@ -1,9 +1,12 @@
 import cors from "@fastify/cors";
 import Fastify from "fastify";
 import fs from "node:fs/promises";
+import { batchStore } from "./batch.js";
 import { config } from "./config.js";
 import { cancelAll } from "./orchestrator.js";
+import { registerBatchRoutes } from "./routes/batches.js";
 import { registerRunRoutes } from "./routes/runs.js";
+import { store } from "./store.js";
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL ?? "info" },
@@ -20,8 +23,11 @@ await app.register(cors, {
 app.get("/health", async () => ({ ok: true }));
 
 await registerRunRoutes(app);
+await registerBatchRoutes(app);
 
 await fs.mkdir(config.artifactDir, { recursive: true });
+await store.hydrate();
+await batchStore.hydrate();
 
 try {
   await app.listen({ port: config.PORT, host: "127.0.0.1" });

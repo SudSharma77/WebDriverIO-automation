@@ -1,20 +1,31 @@
 import { randomUUID } from "node:crypto";
+import { deleteRun, loadAllRuns, saveRun } from "./persist.js";
 import type { CreateRunInput, LaneState, Platform, RunEvent, RunState } from "./types.js";
 
 type Subscriber = (event: RunEvent) => void;
 
 /**
- * In-memory run store with a per-run event log and fan-out to SSE subscribers.
- *
- * Tradeoff: state dies with the process, so a restart mid-run orphans the run
- * (the child processes are killed with it, so nothing leaks). That is the right
- * call for a single-node tool; a multi-node deployment would need the log in
- * Redis/Postgres and the lanes in a real queue.
+ * Run store with a per-run event log, fan-out to SSE subscribers, and a
+ * debounced JSON snapshot on disk (see persist.ts) so a `tsx watch` reload or
+ * a real restart does not orphan run history. The live event log and
+ * subscriber fan-out are still in-memory only - only the run's current
+ * snapshot survives a restart, not a mid-flight SSE replay buffer, which is
+ * the right tradeoff for a single-node tool.
  */
 class RunStore {
   #runs = new Map<string, RunState>();
   #log = new Map<string, RunEvent[]>();
   #subscribers = new Map<string, Set<Subscriber>>();
+  #saveTimers = new Map<string, NodeJS.Timeout>();
+
+  /** Load persisted runs before the server starts accepting requests. */
+  async hydrate(): Promise<void> {
+    for (const run of await loadAllRuns()) {
+      this.#runs.set(run.id, run);
+      this.#log.set(run.id, []);
+    }
+    this.#evict();
+  }
 
   /** Newest-first, capped so a long-lived dev server does not grow unbounded. */
   static readonly MAX_RUNS = 50;
@@ -40,6 +51,7 @@ class RunStore {
       prompt: input.prompt,
       target: input.target,
       headless: input.headless ?? false,
+      stabilityRuns: input.stabilityRuns ?? 0,
       createdAt: Date.now(),
       lanes,
       order: input.platforms,
@@ -104,6 +116,24 @@ class RunStore {
         // A broken pipe on one SSE client must not abort the run.
       }
     }
+
+    this.#scheduleSave(run);
+  }
+
+  /**
+   * Debounced so a burst of tool-call/screenshot events during exploration
+   * collapses into one disk write instead of one per event.
+   */
+  #scheduleSave(run: RunState): void {
+    const existing = this.#saveTimers.get(run.id);
+    if (existing) clearTimeout(existing);
+    this.#saveTimers.set(
+      run.id,
+      setTimeout(() => {
+        this.#saveTimers.delete(run.id);
+        void saveRun(run);
+      }, 250),
+    );
   }
 
   #apply(run: RunState, event: RunEvent): void {
@@ -148,6 +178,10 @@ class RunStore {
       case "artifact":
         if (event.kind === "recorded") lane.recordedCode = event.code;
         else {
+          // Only a genuine content change counts as "the repair pass rewrote
+          // this" - the final re-emit (same code, now with a path attached)
+          // must not overwrite the diff baseline with itself.
+          if (lane.specCode && lane.specCode !== event.code) lane.previousSpecCode = lane.specCode;
           lane.specCode = event.code;
           lane.specPath = event.path;
         }
@@ -166,6 +200,7 @@ class RunStore {
     for (const stale of runs.slice(RunStore.MAX_RUNS)) {
       this.#runs.delete(stale.id);
       this.#log.delete(stale.id);
+      void deleteRun(stale.id);
     }
   }
 }

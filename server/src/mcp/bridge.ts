@@ -79,14 +79,50 @@ export function toLlmTools(tools: McpTool[]): LlmToolDef[] {
  * MCP advertises JSON Schema; both provider APIs want an object schema with a
  * `properties` map. Servers occasionally omit `properties` on no-arg tools,
  * which is rejected — fill it in rather than letting the request 400.
+ *
+ * Boolean properties are widened to accept a string too: some models (seen
+ * on Groq's qwen3.6-27b) emit "true"/"false" as a JSON string instead of a
+ * real boolean, and providers validate tool-call arguments against this exact
+ * schema server-side — a strict `type: "boolean"` makes them reject the whole
+ * turn with a 400 before the agent ever sees a chance to self-correct. See
+ * coerceToolInput(), called right before the value reaches the real tool.
  */
 function normalizeSchema(schema: McpTool["inputSchema"]): Record<string, unknown> {
   const raw = (schema ?? {}) as Record<string, unknown>;
-  return {
-    ...raw,
-    type: "object",
-    properties: (raw.properties as Record<string, unknown>) ?? {},
-  };
+  const properties = { ...((raw.properties as Record<string, unknown>) ?? {}) };
+
+  for (const [key, prop] of Object.entries(properties)) {
+    if (prop && typeof prop === "object" && (prop as { type?: unknown }).type === "boolean") {
+      properties[key] = { ...(prop as Record<string, unknown>), type: ["boolean", "string"] };
+    }
+  }
+
+  return { ...raw, type: "object", properties };
+}
+
+/**
+ * Undo the schema-widening above: a "true"/"false" string arriving from the
+ * model is coerced back to a real boolean before it reaches the MCP tool,
+ * which still expects the type its own schema originally declared.
+ */
+export function coerceToolInput(tool: McpTool, input: Record<string, unknown>): Record<string, unknown> {
+  const properties = (tool.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties ?? {};
+  const out = { ...input };
+
+  for (const [key, prop] of Object.entries(properties)) {
+    if (
+      prop &&
+      typeof prop === "object" &&
+      (prop as { type?: unknown }).type === "boolean" &&
+      typeof out[key] === "string"
+    ) {
+      const value = (out[key] as string).trim().toLowerCase();
+      if (value === "true") out[key] = true;
+      else if (value === "false") out[key] = false;
+    }
+  }
+
+  return out;
 }
 
 export interface ConvertedResult {

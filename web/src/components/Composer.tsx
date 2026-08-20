@@ -21,11 +21,13 @@ export function Composer({ capabilities, busy, issues, onSubmit, onCancel, canCa
     androidApp: useId(),
     iosApp: useId(),
     iosDevice: useId(),
+    stability: useId(),
   };
 
   const [prompt, setPrompt] = useState("");
   const [selected, setSelected] = useState<Platform[]>(["web"]);
   const [headless, setHeadless] = useState(false);
+  const [stabilityRuns, setStabilityRuns] = useState(0);
   const [webUrl, setWebUrl] = useState("");
   const [androidApp, setAndroidApp] = useState("");
   const [iosApp, setIosApp] = useState("");
@@ -47,13 +49,13 @@ export function Composer({ capabilities, busy, issues, onSubmit, onCancel, canCa
   const promptTooShort = prompt.trim().length > 0 && prompt.trim().length < 10;
   const canSubmit = !busy && prompt.trim().length >= 10 && selected.length > 0;
 
-  const submit = (event: React.FormEvent) => {
-    event.preventDefault();
+  const doSubmit = () => {
     if (!canSubmit) return;
     onSubmit({
       prompt: prompt.trim(),
       platforms: selected,
       headless,
+      stabilityRuns,
       target: {
         webUrl: webUrl.trim() || undefined,
         androidApp: androidApp.trim() || undefined,
@@ -61,6 +63,19 @@ export function Composer({ capabilities, busy, issues, onSubmit, onCancel, canCa
         iosDeviceName: iosDeviceName.trim() || undefined,
       },
     });
+  };
+
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    doSubmit();
+  };
+
+  /** Ctrl/Cmd+Enter submits from inside the textarea without breaking normal Enter (newline). */
+  const onPromptKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      doSubmit();
+    }
   };
 
   return (
@@ -74,6 +89,7 @@ export function Composer({ capabilities, busy, issues, onSubmit, onCancel, canCa
           className="textarea"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
+          onKeyDown={onPromptKeyDown}
           placeholder={EXAMPLE}
           aria-invalid={promptTooShort || undefined}
           aria-describedby={`${ids.prompt}-hint`}
@@ -83,6 +99,8 @@ export function Composer({ capabilities, busy, issues, onSubmit, onCancel, canCa
           {promptTooShort
             ? "A little more detail — name the screen, the action and what proves it worked."
             : "Describe it as you would to a colleague. Name what proves the scenario passed."}
+          {" "}
+          <kbd>Ctrl/Cmd+Enter</kbd> to run.
         </p>
       </div>
 
@@ -209,6 +227,26 @@ export function Composer({ capabilities, busy, issues, onSubmit, onCancel, canCa
           <span className="platform-toggle__note">faster, no window</span>
         </label>
       )}
+
+      <div className="field">
+        <label className="field__label" htmlFor={ids.stability}>
+          Stability check
+        </label>
+        <select
+          id={ids.stability}
+          className="input"
+          value={stabilityRuns}
+          onChange={(e) => setStabilityRuns(Number(e.target.value))}
+          disabled={busy}
+        >
+          <option value={0}>Off — one cold run is enough</option>
+          <option value={2}>Repeat 2 more times</option>
+          <option value={4}>Repeat 4 more times</option>
+        </select>
+        <p className="field__hint">
+          After a spec passes, replay it again cold to catch timing-dependent flakiness before you trust it.
+        </p>
+      </div>
 
       <div style={{ marginTop: "var(--space-5)", display: "grid", gap: "var(--space-2)" }}>
         <button className="btn btn--primary" type="submit" disabled={!canSubmit}>

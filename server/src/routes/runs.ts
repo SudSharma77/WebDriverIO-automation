@@ -2,7 +2,10 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { availableModels } from "../agent/llm/index.js";
 import { config } from "../config.js";
+import { buildProjectZip } from "../export.js";
+import { planFor } from "../lanes/capabilities.js";
 import { cancelRun, startRun } from "../orchestrator.js";
+import { verify } from "../runner/verify.js";
 import { store } from "../store.js";
 import { PLATFORMS, isPlatform, type RunEvent } from "../types.js";
 
@@ -11,6 +14,8 @@ const CreateRun = z
     prompt: z.string().trim().min(10, "Describe the test case in a sentence or two.").max(4000),
     platforms: z.array(z.enum(PLATFORMS)).min(1, "Pick at least one platform."),
     headless: z.boolean().default(false),
+    // Extra cold repeats after a pass, to catch flaky specs before handing them off.
+    stabilityRuns: z.coerce.number().int().min(0).max(5).default(0),
     target: z
       .object({
         webUrl: z.string().trim().max(2048).optional(),
@@ -108,6 +113,70 @@ export async function registerRunRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  /** Droppable-into-a-repo project: spec + wdio.conf.js + package.json + README, zipped. */
+  app.get<{ Params: { id: string; platform: string } }>(
+    "/api/runs/:id/:platform/export",
+    async (request, reply) => {
+      const { id, platform } = request.params;
+      if (!isPlatform(platform)) return reply.status(400).send({ error: "unknown_platform" });
+
+      const run = store.get(id);
+      const lane = store.lane(id, platform);
+      if (!run || !lane?.specCode) return reply.status(404).send({ error: "no_spec_yet" });
+
+      const zip = await buildProjectZip({ lane, platform, target: run.target, headless: run.headless });
+      return reply
+        .header("content-type", "application/zip")
+        .header("content-disposition", `attachment; filename="${platform}-spec-export.zip"`)
+        .send(zip);
+    },
+  );
+
+  /**
+   * Regression check: replay an already-generated spec against the site as it
+   * is right now, without exploring or synthesizing again. A green run once
+   * proves the spec worked on that day - this is how you find out whether a
+   * later deploy broke it, at a fraction of the cost of a fresh run.
+   */
+  app.post<{ Params: { id: string; platform: string } }>(
+    "/api/runs/:id/:platform/reverify",
+    async (request, reply) => {
+      const { id, platform } = request.params;
+      if (!isPlatform(platform)) return reply.status(400).send({ error: "unknown_platform" });
+
+      const run = store.get(id);
+      const lane = store.lane(id, platform);
+      if (!run || !lane?.specCode) return reply.status(404).send({ error: "no_spec_yet" });
+      if (lane.status === "running") return reply.status(409).send({ error: "lane_busy" });
+
+      const spec = lane.specCode;
+      const plan = planFor(platform, run.target, run.headless);
+      const signal = new AbortController().signal;
+      const onLine = (line: string) => store.emit(id, { type: "verify.log", platform, line });
+
+      void (async () => {
+        store.emit(id, { type: "lane.status", platform, status: "running" });
+        store.emit(id, { type: "lane.phase", platform, phase: "verify" });
+        onLine("--- regression check: replaying the stored spec against the live target ---");
+
+        const result = await verify({ runId: id, platform, plan, spec, onLine, signal });
+
+        store.emit(id, { type: "lane.phase", platform, phase: "done" });
+        store.emit(id, {
+          type: "lane.status",
+          platform,
+          status: result.passed ? "passed" : "failed",
+          detail: result.passed
+            ? "Regression check passed - the stored spec still works against the current target."
+            : (result.reason ??
+              "Regression check failed - the target may have changed since this spec was generated."),
+        });
+      })();
+
+      return reply.status(202).send({ started: true });
+    },
+  );
+
   /**
    * SSE stream. Sends the current snapshot first, then the missed event log,
    * then live events - so a client that connects late, or reconnects, lands in
@@ -132,7 +201,11 @@ export async function registerRunRoutes(app: FastifyInstance): Promise<void> {
     send({ type: "run.snapshot", run });
     for (const event of store.history(run.id)) send(event);
 
-    if (run.finishedAt) {
+    // A run's original finish does not preclude a lane being live again right
+    // now - a regression re-check reuses the same run id and flips a lane
+    // back to "running" without touching run.finishedAt.
+    const anyLaneRunning = Object.values(run.lanes).some((lane) => lane.status === "running");
+    if (run.finishedAt && !anyLaneRunning) {
       reply.raw.end();
       return reply;
     }

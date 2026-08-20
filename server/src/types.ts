@@ -34,6 +34,8 @@ export interface CreateRunInput {
   platforms: Platform[];
   target: RunTarget;
   headless?: boolean;
+  /** Extra cold `wdio run` repeats after the first pass, to catch flaky specs. */
+  stabilityRuns?: number;
 }
 
 export interface LaneState {
@@ -46,6 +48,7 @@ export interface LaneState {
   screenshots: Screenshot[];
   recordedCode?: string;
   specCode?: string;
+  previousSpecCode?: string;
   specPath?: string;
   verifyLog: string[];
   startedAt?: number;
@@ -75,10 +78,36 @@ export interface RunState {
   prompt: string;
   target: RunTarget;
   headless: boolean;
+  stabilityRuns: number;
   createdAt: number;
   finishedAt?: number;
   lanes: Record<string, LaneState>;
   order: Platform[];
+}
+
+/** One row of a bulk upload: its own scenario and target, sharing the batch's platform/headless/stability settings. */
+export interface BatchCase {
+  prompt: string;
+  target: RunTarget;
+}
+
+/**
+ * A batch is a thin ordered pointer to real runs, not a parallel execution
+ * model. Cases run one at a time through the exact same pipeline a single
+ * submission uses — sequential on purpose, since three lanes already contend
+ * for one rate-limited key; N cases run in parallel would multiply that.
+ */
+export interface BatchState {
+  id: string;
+  createdAt: number;
+  finishedAt?: number;
+  platforms: Platform[];
+  headless: boolean;
+  stabilityRuns: number;
+  /** Populated as each case starts - the last id is still running until finishedAt is set. */
+  runIds: string[];
+  /** Total cases requested, known immediately even before every run has been created. */
+  caseCount: number;
 }
 
 export type RunEvent =

@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
+import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js";
 import { config } from "../config.js";
 import { llm, type LlmToolDef, type LlmToolResult } from "./llm/index.js";
 import { EXPLORER_SYSTEM, explorerTask } from "./prompts.js";
-import { convertToolResult } from "../mcp/bridge.js";
+import { coerceToolInput, convertToolResult } from "../mcp/bridge.js";
 import type { WdioMcp } from "../mcp/client.js";
 import type { LanePlan } from "../lanes/capabilities.js";
 import type { AgentStep, Platform, Screenshot } from "../types.js";
@@ -26,12 +27,16 @@ export interface ExploreResult {
 export interface ExploreArgs {
   mcp: WdioMcp;
   tools: LlmToolDef[];
+  /** Original MCP schemas, pre-widening - used to coerce a stringified boolean back before the tool sees it. */
+  mcpTools: McpTool[];
   prompt: string;
   platform: Platform;
   plan: LanePlan;
   budget: number;
   emit: ExploreEmitter;
   signal: AbortSignal;
+  /** Static pre-fetch of the target page, if one was taken. Web lane only. */
+  siteSkim?: string | null;
 }
 
 /**
@@ -43,7 +48,8 @@ export interface ExploreArgs {
  * discovered at runtime, and the same shape across two different provider APIs.
  */
 export async function explore(args: ExploreArgs): Promise<ExploreResult> {
-  const { mcp, tools, prompt, platform, plan, budget, emit, signal } = args;
+  const { mcp, tools, mcpTools, prompt, platform, plan, budget, emit, signal, siteSkim } = args;
+  const toolByName = new Map(mcpTools.map((t) => [t.name, t]));
 
   const conversation = llm.startConversation({
     system: EXPLORER_SYSTEM,
@@ -53,7 +59,7 @@ export async function explore(args: ExploreArgs): Promise<ExploreResult> {
   });
 
   const transcript: string[] = [];
-  let next: string | LlmToolResult[] = explorerTask(prompt, platform, plan);
+  let next: string | LlmToolResult[] = explorerTask(prompt, platform, plan, siteSkim);
   let toolCalls = 0;
 
   for (;;) {
@@ -95,10 +101,13 @@ export async function explore(args: ExploreArgs): Promise<ExploreResult> {
       signal.throwIfAborted();
       toolCalls += 1;
 
-      const step: AgentStep = { id: call.id, name: call.name, input: call.input, at: Date.now() };
+      const mcpTool = toolByName.get(call.name);
+      const input = mcpTool ? coerceToolInput(mcpTool, call.input) : call.input;
+
+      const step: AgentStep = { id: call.id, name: call.name, input, at: Date.now() };
       emit.toolStarted(step);
 
-      const raw = await mcp.callTool(call.name, call.input);
+      const raw = await mcp.callTool(call.name, input);
       const converted = convertToolResult(raw);
 
       // Screenshots always reach the UI; whether they also reach the model is a
@@ -109,7 +118,7 @@ export async function explore(args: ExploreArgs): Promise<ExploreResult> {
 
       emit.toolFinished(call.id, !raw.isError, converted.summary);
       transcript.push(
-        `${raw.isError ? "x" : "+"} ${call.name}(${compactJson(call.input)}) -> ${converted.summary}`,
+        `${raw.isError ? "x" : "+"} ${call.name}(${compactJson(input)}) -> ${converted.summary}`,
       );
 
       results.push({

@@ -1,10 +1,21 @@
-import type { Platform, RunEvent, RunState, RunTarget, ServerCapabilities } from "./types";
+import type {
+  BatchCase,
+  BatchState,
+  BatchSummary,
+  Platform,
+  RunEvent,
+  RunState,
+  RunSummary,
+  RunTarget,
+  ServerCapabilities,
+} from "./types";
 
 export interface CreateRunBody {
   prompt: string;
   platforms: Platform[];
   headless: boolean;
   target: RunTarget;
+  stabilityRuns?: number;
 }
 
 export class ApiError extends Error {
@@ -52,8 +63,53 @@ export async function cancelRun(id: string): Promise<void> {
   await fetch(`/api/runs/${id}/cancel`, { method: "POST" });
 }
 
+/** Replay an already-generated spec against the site as it is right now. */
+export async function reverifyLane(id: string, platform: Platform): Promise<void> {
+  const res = await fetch(`/api/runs/${id}/${platform}/reverify`, { method: "POST" });
+  if (!res.ok) throw new ApiError(`Could not start the regression check (${res.status}).`);
+}
+
 export function specDownloadUrl(runId: string, platform: Platform): string {
   return `/api/runs/${runId}/${platform}/spec`;
+}
+
+export function projectDownloadUrl(runId: string, platform: Platform): string {
+  return `/api/runs/${runId}/${platform}/export`;
+}
+
+export async function fetchRunHistory(): Promise<RunSummary[]> {
+  const { runs } = await parse<{ runs: RunSummary[] }>(await fetch("/api/runs"));
+  return runs;
+}
+
+export async function fetchRun(id: string): Promise<RunState> {
+  const { run } = await parse<{ run: RunState }>(await fetch(`/api/runs/${id}`));
+  return run;
+}
+
+export interface CreateBatchBody {
+  cases: BatchCase[];
+  platforms: Platform[];
+  headless: boolean;
+  stabilityRuns?: number;
+}
+
+export async function createBatch(body: CreateBatchBody): Promise<{ id: string; batch: BatchState }> {
+  const res = await fetch("/api/batches", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parse<{ id: string; batch: BatchState }>(res);
+}
+
+export async function fetchBatchList(): Promise<BatchSummary[]> {
+  const { batches } = await parse<{ batches: BatchSummary[] }>(await fetch("/api/batches"));
+  return batches;
+}
+
+export async function fetchBatch(id: string): Promise<{ batch: BatchState; runs: RunSummary[] }> {
+  return parse<{ batch: BatchState; runs: RunSummary[] }>(await fetch(`/api/batches/${id}`));
 }
 
 /**

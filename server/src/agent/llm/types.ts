@@ -78,4 +78,7 @@ export interface LlmProvider {
 
   /** Turn a provider error into something a user can act on. */
   describeError(err: unknown): string;
+
+  /** Whether this error is the provider's own 429, so a fallback model is worth trying. */
+  isRateLimited(err: unknown): boolean;
 }

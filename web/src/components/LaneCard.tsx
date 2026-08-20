@@ -1,6 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { specDownloadUrl } from "../api";
-import { PLATFORM_GLYPH, PLATFORM_LABEL, type LaneState } from "../types";
+import { projectDownloadUrl, specDownloadUrl } from "../api";
+import { diffLines } from "../diff";
+import { highlightJs } from "../highlight";
+import { PLATFORM_GLYPH, PLATFORM_LABEL, type LaneState, type Platform } from "../types";
 import { PhaseRail } from "./PhaseRail";
 import { StatusPill } from "./StatusPill";
 
@@ -17,9 +19,10 @@ interface Props {
   runId: string;
   lane: LaneState;
   onZoom: (dataUrl: string) => void;
+  onReverify: (platform: Platform) => void;
 }
 
-export function LaneCard({ runId, lane, onZoom }: Props) {
+export function LaneCard({ runId, lane, onZoom, onReverify }: Props) {
   const [tab, setTab] = useState<TabKey>("steps");
   const baseId = useId();
   const tablistRef = useRef<HTMLDivElement>(null);
@@ -109,7 +112,7 @@ export function LaneCard({ runId, lane, onZoom }: Props) {
         {tab === "steps" && <Steps lane={lane} />}
         {tab === "screens" && <Screens lane={lane} onZoom={onZoom} />}
         {tab === "spec" && <Spec runId={runId} lane={lane} />}
-        {tab === "logs" && <Logs lane={lane} />}
+        {tab === "logs" && <Logs lane={lane} onReverify={() => onReverify(lane.platform)} />}
       </div>
     </section>
   );
@@ -171,6 +174,8 @@ function Screens({ lane, onZoom }: { lane: LaneState; onZoom: (dataUrl: string) 
 
 function Spec({ runId, lane }: { runId: string; lane: LaneState }) {
   const [copied, setCopied] = useState(false);
+  const hasDiff = !!lane.previousSpecCode && lane.previousSpecCode !== lane.specCode;
+  const [showDiff, setShowDiff] = useState(hasDiff);
 
   if (!lane.specCode) {
     return (
@@ -194,21 +199,51 @@ function Spec({ runId, lane }: { runId: string; lane: LaneState }) {
   return (
     <>
       <div className="panel-actions">
+        {hasDiff && (
+          <button className="btn btn--ghost" type="button" onClick={() => setShowDiff((v) => !v)}>
+            {showDiff ? "Show final code" : "Show repair diff"}
+          </button>
+        )}
         <button className="btn btn--ghost" type="button" onClick={copy}>
           {copied ? "Copied" : "Copy"}
         </button>
         <a className="btn btn--ghost" href={specDownloadUrl(runId, lane.platform)} download>
-          Download
+          Download spec
+        </a>
+        <a className="btn btn--ghost" href={projectDownloadUrl(runId, lane.platform)} download>
+          Export project (.zip)
         </a>
       </div>
-      <pre className="code">
-        <code>{lane.specCode}</code>
-      </pre>
+      {showDiff && hasDiff ? (
+        <SpecDiff before={lane.previousSpecCode!} after={lane.specCode} />
+      ) : (
+        <pre className="code">
+          <code>{highlightJs(lane.specCode)}</code>
+        </pre>
+      )}
     </>
   );
 }
 
-function Logs({ lane }: { lane: LaneState }) {
+function SpecDiff({ before, after }: { before: string; after: string }) {
+  const lines = diffLines(before, after);
+  return (
+    <pre className="code code--diff">
+      <code>
+        {lines.map((line, i) => (
+          <div className="diff-line" data-type={line.type} key={i}>
+            <span className="diff-line__marker" aria-hidden="true">
+              {line.type === "add" ? "+" : line.type === "remove" ? "−" : " "}
+            </span>
+            {highlightJs(line.text)}
+          </div>
+        ))}
+      </code>
+    </pre>
+  );
+}
+
+function Logs({ lane, onReverify }: { lane: LaneState; onReverify: () => void }) {
   const ref = useRef<HTMLPreElement>(null);
 
   // Follow the tail while the run is live, but never yank the view away from
@@ -220,13 +255,25 @@ function Logs({ lane }: { lane: LaneState }) {
     if (atBottom) el.scrollTop = el.scrollHeight;
   }, [lane.verifyLog.length]);
 
-  if (lane.verifyLog.length === 0) {
-    return <Empty title="No run log yet" body="Output from the WebdriverIO replay lands here." />;
-  }
+  const canReverify = !!lane.specCode && lane.status !== "running" && lane.status !== "queued";
+
   return (
-    <pre className="log" ref={ref}>
-      {lane.verifyLog.join("\n")}
-    </pre>
+    <>
+      {canReverify && (
+        <div className="panel-actions">
+          <button className="btn btn--ghost" type="button" onClick={onReverify}>
+            Re-check against live site
+          </button>
+        </div>
+      )}
+      {lane.verifyLog.length === 0 ? (
+        <Empty title="No run log yet" body="Output from the WebdriverIO replay lands here." />
+      ) : (
+        <pre className="log" ref={ref}>
+          {lane.verifyLog.join("\n")}
+        </pre>
+      )}
+    </>
   );
 }
 

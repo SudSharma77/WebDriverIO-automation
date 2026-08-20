@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "skills": {
+    "analyze-website": {
+      "source": "klamping/webdriverio-skills",
+      "sourceType": "github",
+      "skillPath": "skills/analyze-website/SKILL.md",
+      "computedHash": "b89db8dce8826723b4e05c5337825d7f3f61218d6c5c4696f0961cd84b308115"
+    },
+    "creating-test-structure": {
+      "source": "klamping/webdriverio-skills",
+      "sourceType": "github",
+      "skillPath": "skills/creating-test-structure/SKILL.md",
+      "computedHash": "29ce8bb15ec5f7fba572e2cff2cbb99601cac5fbb115da54b8610ba81a1f8bd5"
+    },
+    "gathering-context": {
+      "source": "klamping/webdriverio-skills",
+      "sourceType": "github",
+      "skillPath": "skills/gathering-context/SKILL.md",
+      "computedHash": "ab66418a2e5317ef469906125a5adb662a523fa4a7532f1459807d0875a3d4c3"
+    },
+    "investigate-failing-tests": {
+      "source": "klamping/webdriverio-skills",
+      "sourceType": "github",
+      "skillPath": "skills/investigate-failing-tests/SKILL.md",
+      "computedHash": "5fe25fb6a05ccda2a662eaf8f6b4ff4e1573f45bbfe199afbd7e747e66f9f25d"
+    },
+    "managing-project-customizations": {
+      "source": "klamping/webdriverio-skills",
+      "sourceType": "github",
+      "skillPath": "skills/managing-project-customizations/SKILL.md",
+      "computedHash": "fd0f1319927901d4ae41dc96165e5103955312c1a9ca541225e956fad6fb1802"
+    },
+    "running-webdriverio-tests": {
+      "source": "klamping/webdriverio-skills",
+      "sourceType": "github",
+      "skillPath": "skills/running-webdriverio-tests/SKILL.md",
+      "computedHash": "3dad62eaccb7b73f1e14e2da70ecadba8adbb4e31d532e40fc9f8a5733310489"
+    },
+    "skipped-test-manager": {
+      "source": "klamping/webdriverio-skills",
+      "sourceType": "github",
+      "skillPath": "skills/skipped-test-manager/SKILL.md",
+      "computedHash": "7760a276b4c506e3cdbd1ae0e75a42f56fcb9cb01e2110f2bdbcfbb4fb66a29e"
+    },
+    "writing-webdriverio-code": {
+      "source": "klamping/webdriverio-skills",
+      "sourceType": "github",
+      "skillPath": "skills/writing-webdriverio-code/SKILL.md",
+      "computedHash": "1ddcd33b352a0ce3f1a7ff83da912db8c4b26b856bb4f4e54c4af47456042773"
+    }
+  }
+}
