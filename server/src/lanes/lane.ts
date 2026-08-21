@@ -350,6 +350,25 @@ export async function extendLane({ run, platform, baseLane, additionalPrompt, si
   // when it finished, and an extended login flow still has to be able to log in.
   const secrets = store.secrets(runId);
 
+  // Only used for its project handle and staging - the reuse/replay decision
+  // itself does not apply here, this lane already knows exactly what to do.
+  const knowledge = await openKnowledge({
+    clientId: run.clientId,
+    prompt: run.prompt,
+    platform,
+    target: run.target,
+    availableSecrets: secrets.names,
+  });
+  // openKnowledge can still classify the combined prompt as a "replayed" match
+  // against the base spec (it hasn't seen the additional part). recordSuccess
+  // reads that mode to mean "identical content, skip the write" - which is
+  // never true here, the merged spec always has new steps. Keep decision.spec
+  // (it is what makes the saved filename match the base spec) but force the
+  // mode so the write actually happens.
+  if (knowledge.decision.mode === "replayed") {
+    knowledge.decision = { ...knowledge.decision, mode: "explored" };
+  }
+
   const plan = planFor(platform, run.target, run.headless);
   let mcp: WdioMcp | null = null;
 
@@ -444,7 +463,13 @@ export async function extendLane({ run, platform, baseLane, additionalPrompt, si
     emit({ type: "lane.phase", platform, phase: "verify" });
     const onLine = (line: string) => emit({ type: "verify.log", platform, line });
 
-    let result = await verify({ runId, clientId: run.clientId, platform, plan, spec, onLine, signal, secrets });
+    const title = titleOf(spec) ?? run.prompt.slice(0, 60);
+    const specName = knowledge.decision.spec?.file ?? `${slugify(title)}.${platform}.spec.js`;
+    // Staged inside the client's project so imports of their page objects
+    // resolve exactly as they will once the spec is accepted into the suite.
+    const workspace = stagingWorkspace(knowledge.project, specName);
+
+    let result = await verify({ runId, clientId: run.clientId, platform, plan, spec, onLine, signal, secrets, workspace });
 
     if (!result.passed && !signal.aborted) {
       onLine("--- replay failed; attempting one repair pass ---");
@@ -465,7 +490,7 @@ export async function extendLane({ run, platform, baseLane, additionalPrompt, si
       spec = repaired.code;
       emit({ type: "lane.usage", platform, usage: repaired.usage });
       emit({ type: "artifact", platform, kind: "spec", code: spec });
-      result = await verify({ runId, clientId: run.clientId, platform, plan, spec, onLine, signal, secrets });
+      result = await verify({ runId, clientId: run.clientId, platform, plan, spec, onLine, signal, secrets, workspace });
     }
 
     let stabilityDetail: string | undefined;
@@ -480,6 +505,7 @@ export async function extendLane({ run, platform, baseLane, additionalPrompt, si
         onLine,
         signal,
         secrets,
+        workspace,
       });
     }
 
@@ -490,7 +516,25 @@ export async function extendLane({ run, platform, baseLane, additionalPrompt, si
       emit({ type: "lane.usage", platform, usage: summarized.usage });
     }
 
+    // Cleared after every replay, including the stability repeats: a spec that
+    // never passed has no business being left behind in the client's project.
+    await clearStaging(knowledge.project);
+
     emit({ type: "artifact", platform, kind: "spec", code: spec, path: result.specPath });
+
+    if (result.passed) {
+      const saved = await recordSuccess({
+        session: knowledge,
+        runId,
+        spec,
+        title,
+        prompt: run.prompt,
+        platform,
+        target: run.target,
+      });
+      emit({ type: "lane.saved", platform, report: saved });
+    }
+
     emit({ type: "lane.phase", platform, phase: "done" });
     emit({
       type: "lane.status",
