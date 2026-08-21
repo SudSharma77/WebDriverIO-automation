@@ -109,8 +109,76 @@ async function describeElement(element) {
 export async function click(selector, options = {}) {
   const { timeout = DEFAULT_TIMEOUT, label } = options;
   const element = await find(selector, { timeout, label });
-  await element.waitForClickable({ timeout });
-  await element.click();
+
+  try {
+    await element.waitForClickable({ timeout });
+    await element.click();
+  } catch (err) {
+    // Nearly always an overlay — a cookie banner, a consent dialog, a modal —
+    // that loaded after the page did and now sits on top of the target. The
+    // native error says the element "still not clickable" or that another
+    // element would receive the click, without saying which, so the repair
+    // pass has nothing to act on. Name the thing in the way.
+    const blocker = await describeBlocker(element);
+    if (blocker) {
+      throw new Error(
+        `Could not click ${label ?? selector}: it is covered by ${blocker}.\n\n` +
+          "Dismiss that element first — it is most likely a cookie or consent banner that appeared after the page " +
+          "loaded. Add a step that closes it before this one, and wait for it to disappear rather than assuming it " +
+          "is gone.",
+      );
+    }
+    throw err;
+  }
+}
+
+/**
+ * What is actually on top of this element, if anything.
+ *
+ * Hit-tests the element's own centre point: if the topmost element there is
+ * neither the target nor inside it, that is what a real click would land on.
+ * Best-effort — this only runs on a path that is already failing, so it must
+ * never throw and never mask the original error.
+ */
+async function describeBlocker(element) {
+  try {
+    const found = await browser.execute((el) => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) return null;
+
+      const top = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      if (!top || top === el || el.contains(top) || top.contains(el)) return null;
+
+      // Walk up to whichever ancestor established the stacking context — the
+      // overlay container is far more identifiable than the <p> under the cursor.
+      let node = top;
+      for (let i = 0; i < 6 && node.parentElement; i++) {
+        const position = getComputedStyle(node).position;
+        if (position === "fixed" || position === "sticky") break;
+        node = node.parentElement;
+      }
+
+      return {
+        tag: node.tagName.toLowerCase(),
+        id: node.id || null,
+        testId: node.getAttribute("data-testid"),
+        className: typeof node.className === "string" ? node.className.trim().split(/\s+/)[0] : null,
+        text: (node.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80),
+      };
+    }, element);
+
+    if (!found) return null;
+
+    const identity =
+      (found.testId && `[data-testid="${found.testId}"]`) ||
+      (found.id && `#${found.id}`) ||
+      (found.className && `${found.tag}.${found.className}`) ||
+      `<${found.tag}>`;
+
+    return found.text ? `${identity} — "${found.text}"` : identity;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -122,6 +190,22 @@ export async function click(selector, options = {}) {
  */
 export async function type(selector, text, options = {}) {
   const { timeout = DEFAULT_TIMEOUT, label, clear = true } = options;
+
+  // Checked before touching the page, because WebdriverIO's own message for
+  // this ("setValue/addValue only take string or number values") describes the
+  // symptom and not the cause. The overwhelmingly common cause is a credential
+  // that was never supplied to this run, and the value being absent is exactly
+  // the case where naming it costs nothing — there is nothing to leak.
+  if (typeof text !== "string" && typeof text !== "number") {
+    const what = text === undefined ? "undefined" : text === null ? "null" : typeof text;
+    throw new Error(
+      `Cannot type into ${label ?? selector}: the value is ${what}.\n\n` +
+        "If this value comes from process.env.TESTLAB_SECRET_*, that credential was not supplied to this run. " +
+        "Credentials are held only for the lifetime of the run that received them, so a later replay — a regression " +
+        "check, or a reused spec — has to be given them again.",
+    );
+  }
+
   const element = await find(selector, { timeout, label });
   await element.waitForDisplayed({ timeout });
   if (clear) await element.clearValue();
@@ -150,6 +234,38 @@ export async function isVisible(selector, options = {}) {
   } catch {
     return false;
   }
+}
+
+/**
+ * Dismiss a banner or dialog if it turns up, and do nothing if it does not.
+ *
+ * Consent banners are the reason this exists. They load asynchronously, so a
+ * spec that clicks the accept button immediately after navigating often runs
+ * before the banner exists — and then it appears a second later and covers the
+ * form. Clicking it unconditionally is equally wrong, because on a return visit
+ * the cookie is already set and the banner never shows, so the step fails.
+ *
+ * Waits for it, dismisses it, then waits for it to actually go away. Returns
+ * whether there was anything to dismiss.
+ */
+export async function dismissIfPresent(selector, options = {}) {
+  const { timeout = 5000, label } = options;
+
+  if (!(await isVisible(selector, { timeout }))) return false;
+
+  const element = await $(selector);
+  await element.click();
+
+  // A banner that animates out still intercepts clicks while it fades.
+  try {
+    await element.waitForDisplayed({ timeout, reverse: true });
+  } catch {
+    throw new Error(
+      `Clicked ${label ?? selector} but it is still on screen after ${timeout}ms. ` +
+        "Whatever it covers cannot be interacted with while it remains.",
+    );
+  }
+  return true;
 }
 
 /** Wait for something to disappear — a spinner, a modal, a toast. */

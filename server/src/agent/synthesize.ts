@@ -1,5 +1,6 @@
 import { config } from "../config.js";
 import { bindSecretsInSpec, unbindSecretsInSpec } from "../lanes/secrets.js";
+import { digestDom } from "./domDigest.js";
 import { lintSpec } from "./lint.js";
 import { llm, llmFallback } from "./llm/index.js";
 import type { CompleteTurn, TokenUsage } from "./llm/types.js";
@@ -201,10 +202,8 @@ export async function repairSpec(
   if (args.domSnapshot) {
     parts.push(
       "",
-      "DOM snapshot captured at the moment of failure (truncated). Check whether the selector the failing step used was present, hidden, disabled, or simply not there yet:",
-      "```html",
-      args.domSnapshot.slice(0, 4000),
-      "```",
+      "What was actually on the page at the moment of failure. If the element the failing step expected does not appear below, it does not exist on this screen — change the assertion to something that IS here rather than waiting longer for something that will never arrive:",
+      digestDom(args.domSnapshot),
     );
   }
 
@@ -256,7 +255,12 @@ export async function summarizeFailure(args: {
   domSnapshot?: string;
 }): Promise<{ summary: string | null; usage: TokenUsage }> {
   try {
-    const result = await complete(FAILURE_SUMMARY_SYSTEM, [{ role: "user", text: failureSummaryTask(args) }]);
+    // Same reasoning as the repair pass: raw page source is mostly <head>, so
+    // the summary would be written without ever seeing the screen.
+    const digested = args.domSnapshot ? digestDom(args.domSnapshot) : undefined;
+    const result = await complete(FAILURE_SUMMARY_SYSTEM, [
+      { role: "user", text: failureSummaryTask({ ...args, domSnapshot: digested }) },
+    ]);
     return { summary: result.text.trim() || null, usage: result.usage };
   } catch {
     return { summary: null, usage: emptyUsage() };

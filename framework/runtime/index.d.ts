@@ -31,6 +31,13 @@ export declare function selectOption(selector: string, optionText: string, optio
 export declare function getText(selector: string, options?: FindOptions): Promise<string>;
 export declare function isVisible(selector: string, options?: FindOptions): Promise<boolean>;
 export declare function waitForGone(selector: string, options?: FindOptions): Promise<void>;
+
+/**
+ * Dismiss a banner or dialog if present; no-op if absent. Returns whether
+ * anything was dismissed. Use for consent banners, which appear late on a
+ * first visit and not at all on a return visit.
+ */
+export declare function dismissIfPresent(selector: string, options?: FindOptions): Promise<boolean>;
 export declare function waitForPageLoad(options?: { timeout?: number }): Promise<void>;
 
 /** Selectors for the interactive elements currently on screen. Best-effort. */

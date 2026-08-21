@@ -3,7 +3,9 @@ import { z } from "zod";
 import { availableModels } from "../agent/llm/index.js";
 import { config } from "../config.js";
 import { buildProjectZip } from "../export.js";
+import { extractRequiredSecrets } from "../knowledge/extract.js";
 import { planFor } from "../lanes/capabilities.js";
+import { SECRET_ENV_PREFIX } from "../lanes/secrets.js";
 import { cancelRun, startExtend, startRun } from "../orchestrator.js";
 import { verify } from "../runner/verify.js";
 import { store } from "../store.js";
@@ -105,6 +107,23 @@ export async function registerRunRoutes(app: FastifyInstance): Promise<void> {
     })),
   }));
 
+  /**
+   * Clear run history. Artifacts on disk and each client's accumulated suite
+   * are left alone — this forgets the record of runs, not their output.
+   */
+  app.delete("/api/runs", async () => {
+    const { cleared, kept } = store.clearHistory();
+    return { cleared, kept };
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/runs/:id", async (request, reply) => {
+    if (!store.get(request.params.id)) return reply.status(404).send({ error: "not_found" });
+    if (!store.forget(request.params.id)) {
+      return reply.status(409).send({ error: "That run is still in flight — cancel it before removing it." });
+    }
+    return { cleared: 1 };
+  });
+
   app.get<{ Params: { id: string } }>("/api/runs/:id", async (request, reply) => {
     const run = store.get(request.params.id);
     if (!run) return reply.status(404).send({ error: "not_found" });
@@ -171,6 +190,24 @@ export async function registerRunRoutes(app: FastifyInstance): Promise<void> {
       if (lane.status === "running") return reply.status(409).send({ error: "lane_busy" });
 
       const spec = lane.specCode;
+
+      /*
+       * Credentials live only for the run that received them, so by the time a
+       * regression check happens the vault for that run is empty. Running
+       * anyway makes the spec type `undefined` into the login form and report
+       * a failure that looks like the site broke — the single most misleading
+       * result this endpoint could produce. Refuse instead, and say what is
+       * missing.
+       */
+      const secrets = store.secrets(id);
+      const required = extractRequiredSecrets(spec, SECRET_ENV_PREFIX);
+      const missing = required.filter((name) => !secrets.names.includes(name));
+      if (missing.length > 0) {
+        return reply.status(409).send({
+          error: `This spec needs ${missing.join(", ")}, which are no longer held for this run. Credentials are kept only while the run that supplied them is in flight, so a regression check has to be given them again — submit the scenario as a new run with those values.`,
+        });
+      }
+
       const plan = planFor(platform, run.target, run.headless);
       const signal = new AbortController().signal;
       const onLine = (line: string) => store.emit(id, { type: "verify.log", platform, line });
@@ -191,7 +228,7 @@ export async function registerRunRoutes(app: FastifyInstance): Promise<void> {
           spec,
           onLine,
           signal,
-          secrets: store.secrets(id),
+          secrets,
         });
 
         store.emit(id, { type: "lane.phase", platform, phase: "done" });
@@ -244,7 +281,11 @@ export async function registerRunRoutes(app: FastifyInstance): Promise<void> {
    */
   app.get<{ Params: { id: string } }>("/api/runs/:id/stream", async (request, reply) => {
     const run = store.get(request.params.id);
-    if (!run) return reply.status(404).send({ error: "not_found" });
+    // 204, not 404. EventSource cannot see a status code and reconnects on any
+    // failure, so a tab left open on a run that has since been cleared would
+    // retry forever. 204 is the one response the spec defines as "stop": the
+    // browser closes the connection and does not come back.
+    if (!run) return reply.status(204).send();
 
     reply.raw.writeHead(200, {
       "content-type": "text/event-stream",

@@ -13,7 +13,21 @@ type Subscriber = (event: RunEvent) => void;
  * snapshot survives a restart, not a mid-flight SSE replay buffer, which is
  * the right tradeoff for a single-node tool.
  */
-class RunStore {
+export class RunStore {
+  /**
+   * Whether this store writes to disk.
+   *
+   * Off for the instance tests use. A test that exercises the real singleton
+   * writes run.json files into the user's artifact directory and its fixtures
+   * then show up in their run history — which is exactly what happened before
+   * this existed.
+   */
+  readonly #persistent: boolean;
+
+  constructor(options: { persistent?: boolean } = {}) {
+    this.#persistent = options.persistent ?? true;
+  }
+
   #runs = new Map<string, RunState>();
   #log = new Map<string, RunEvent[]>();
   #subscribers = new Map<string, Set<Subscriber>>();
@@ -36,7 +50,17 @@ class RunStore {
       // never hits undefined.
       for (const lane of Object.values(run.lanes)) {
         lane.usage ??= { inputTokens: 0, outputTokens: 0 };
+
+        // Nothing loaded from disk can still be running: the process that owned
+        // its browser session died with the last server. Left as "running" the
+        // lane would spin in the UI forever and the run would be unclearable.
+        if (lane.status === "running" || lane.status === "queued") {
+          lane.status = "error";
+          lane.detail ??= "The server restarted while this run was in flight.";
+        }
       }
+      run.finishedAt ??= Date.now();
+
       this.#runs.set(run.id, run);
       this.#log.set(run.id, []);
     }
@@ -85,6 +109,69 @@ class RunStore {
     return run;
   }
 
+  /**
+   * Forget past runs.
+   *
+   * Deletes the in-memory state, the replay log, the credential vault and the
+   * persisted run.json, so a cleared run cannot come back on the next server
+   * start. A run still in flight is left alone: its lanes hold live browser
+   * sessions, and removing the state they emit into would orphan them.
+   *
+   * The client's accumulated suite under clients/ is deliberately untouched —
+   * that is the durable output, not history.
+   */
+  clearHistory(options: { keep?: (run: RunState) => boolean } = {}): { cleared: number; kept: number } {
+    let cleared = 0;
+    let kept = 0;
+
+    for (const run of [...this.#runs.values()]) {
+      if (this.#isInFlight(run) || options.keep?.(run)) {
+        kept++;
+        continue;
+      }
+      this.#forget(run.id);
+      cleared++;
+    }
+
+    return { cleared, kept };
+  }
+
+  /** Forget one run. Returns false if it is unknown or still running. */
+  forget(runId: string): boolean {
+    const run = this.#runs.get(runId);
+    if (!run || this.#isInFlight(run)) return false;
+    this.#forget(runId);
+    return true;
+  }
+
+  /**
+   * Whether a run still has work happening.
+   *
+   * Deliberately not `!run.finishedAt`. A run whose lanes have all settled but
+   * that never emitted run.done — because the process died, or something threw
+   * outside the orchestrator's finally — would be protected from clearing
+   * forever under that rule, leaving rows in the history that nothing can
+   * remove. What matters is whether a lane is actually still working.
+   */
+  #isInFlight(run: RunState): boolean {
+    if (run.finishedAt) return false;
+    return Object.values(run.lanes).some((lane) => lane.status === "running" || lane.status === "queued");
+  }
+
+  #forget(runId: string): void {
+    const timer = this.#saveTimers.get(runId);
+    // A pending debounced save would otherwise rewrite the file we just removed.
+    if (timer) {
+      clearTimeout(timer);
+      this.#saveTimers.delete(runId);
+    }
+    this.#runs.delete(runId);
+    this.#log.delete(runId);
+    this.#secrets.delete(runId);
+    this.#subscribers.delete(runId);
+    if (this.#persistent) void deleteRun(runId);
+  }
+
   /** The run's credentials. Server-side callers only — never serialise this. */
   secrets(runId: string): SecretBag {
     return this.#secrets.get(runId) ?? SecretBag.from({});
@@ -105,8 +192,17 @@ class RunStore {
     return this.#runs.get(id);
   }
 
+  /**
+   * Newest first, deterministically.
+   *
+   * `createdAt` is millisecond-resolution, so two runs started in the same tick
+   * tie — and the cache reads this list to decide which spec to replay, where
+   * an arbitrary winner means an arbitrary test. Map iteration is insertion
+   * order and Array.sort is stable, so reversing first makes insertion order
+   * the tie-breaker: later-created wins.
+   */
   list(): RunState[] {
-    return [...this.#runs.values()].sort((a, b) => b.createdAt - a.createdAt);
+    return [...this.#runs.values()].reverse().sort((a, b) => b.createdAt - a.createdAt);
   }
 
   lane(runId: string, platform: Platform): LaneState | undefined {
@@ -124,9 +220,16 @@ class RunStore {
     const key = fingerprint(prompt, platform, target);
     if (!key) return null;
 
+    // list() is newest-first, so a later green run supersedes an earlier one.
     for (const run of this.list()) {
       const lane = run.lanes[platform];
       if (!lane?.specCode) continue;
+      // Only a spec that actually passed is worth replaying. Caching on
+      // spec-exists alone meant a failed run's spec was served back forever:
+      // every repeat of that prompt spent a browser session re-proving the
+      // same failure, and because the cache path calls no model, no amount of
+      // prompt improvement could ever produce a better spec for it.
+      if (lane.status !== "passed") continue;
       if (fingerprint(run.prompt, platform, run.target) === key) return lane.specCode;
     }
     return null;
@@ -182,6 +285,8 @@ class RunStore {
    * collapses into one disk write instead of one per event.
    */
   #scheduleSave(run: RunState): void {
+    if (!this.#persistent) return;
+
     const existing = this.#saveTimers.get(run.id);
     if (existing) clearTimeout(existing);
     this.#saveTimers.set(

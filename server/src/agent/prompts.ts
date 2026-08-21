@@ -15,7 +15,10 @@ How to work:
 - Take a screenshot at the start, after each meaningful state change, and at the end. Screenshots are how the human reviews your run.
 - Perform the user's scenario step by step. After each action, re-read the screen to confirm the app actually moved to the state you expected.
 - Verify the outcome explicitly. A test that only performs actions proves nothing — find the on-screen evidence that the scenario succeeded (a heading, a row, a toast, a changed value) and observe it with a tool call.
+- Your LAST action before writing the summary must be a fresh read of the screen (get_elements or get_accessibility_tree), even if you are confident the scenario worked. The generated test asserts on what you report here: if you never look at the end state, the assertion gets written from the wording of the request instead, and it will name an element that does not exist. Budget a call for this.
+- Report the end state in your own words using only text and locators you just read. If the app landed somewhere different from what the request implied — a catalogue instead of a "dashboard", a modal instead of a new page — say what is actually there. That is useful information, not a failure on your part.
 - If an element is missing, do not invent a workaround silently: re-read the screen, scroll or switch context if the platform supports it, and try a different observed locator.
+- Cookie and consent banners load a second or two AFTER the page, so they are often absent on your first read and covering the form on your second. If one appears, dismiss it and then re-read the screen to confirm it is gone before continuing. Note in your summary that the banner exists and which button closes it — the generated test has to handle it too, and it cannot know unless you say so.
 - If the scenario is genuinely impossible on this app (the feature is absent, a login wall blocks you, the app crashed), stop and say so plainly in your final message. Do not fake a pass.
 
 Selector discipline — this is what the generated test inherits:
@@ -75,11 +78,13 @@ Steps:
 1. <one user-observable action, imperative mood, one action per line>
 2. ...
 Expected Result:
-- <one specific, checkable assertion — name the element and the expected value, not "it works">
+- <one specific, checkable assertion, quoting the element and value the transcript actually observed>
 
 Rules:
 - Every step must be something that actually happened in the transcript. Never invent a step that was not observed.
 - Every Expected Result line must be checkable with a real assertion (visible text, an attribute, a URL, a count) — not a vague claim.
+- CRITICAL: the Expected Result must name something the transcript actually observed on screen after the steps ran. The scenario the user described tells you what to test, NOT what the app displays. If the user says "redirects to the homepage", assert on the heading, URL or element the transcript really saw there — never on a plausible-sounding element like a "Dashboard" heading that nothing in the transcript reports. An assertion invented from the wording of the request will fail forever, and it fails in a way that looks like a broken app rather than a broken test.
+- If the transcript never observed the end state, say so: write "Expected Result:\n- UNVERIFIED: exploration ended before the outcome was observed" rather than inventing one.
 - Keep steps atomic: one action per line, not "fill in the form and submit".
 - Respond with ONLY the structure above. No preamble, no code, no markdown fencing.`;
 
@@ -117,6 +122,8 @@ Output requirements:
   * isVisible(selector) -> boolean        — never throws
   * waitForGone(selector)                 — waits for a spinner/modal to disappear
   * waitForPageLoad()                     — waits for document.readyState complete
+  * dismissIfPresent(selector, { label }) — closes a banner if it shows up, no-op if not
+- If the transcript mentions a cookie or consent banner, dismiss it with dismissIfPresent BEFORE the steps that touch the form underneath — never with a plain click. These banners load late, so a click can run before the banner exists and then the banner covers the form; and on a repeat visit the cookie is already set and the banner never appears, so an unconditional click fails. dismissIfPresent handles both.
   Always pass a human \`label\` ("the checkout button"): it names the element in the failure message when the selector misses.
 - Drop to raw \`$\`/\`$$\` only for something the helpers do not cover, and say why in a comment.
 - Structure it as describe(...) / it(...). One it() per scenario.

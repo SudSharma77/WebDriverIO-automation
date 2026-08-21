@@ -103,6 +103,15 @@ export async function fetchRunHistory(): Promise<RunSummary[]> {
   return runs;
 }
 
+/** Forget finished runs. Generated suites under clients/ are not touched. */
+export async function clearRunHistory(): Promise<{ cleared: number; kept: number }> {
+  return parse<{ cleared: number; kept: number }>(await fetch("/api/runs", { method: "DELETE" }));
+}
+
+export async function forgetRun(id: string): Promise<void> {
+  await parse<{ cleared: number }>(await fetch(`/api/runs/${id}`, { method: "DELETE" }));
+}
+
 export async function fetchRun(id: string): Promise<RunState> {
   const { run } = await parse<{ run: RunState }>(await fetch(`/api/runs/${id}`));
   return run;
@@ -139,6 +148,10 @@ export async function fetchBatch(id: string): Promise<{ batch: BatchState; runs:
  * EventSource reconnects on its own, and the server replays a snapshot plus the
  * event log on every connect — so a dropped connection self-heals without the
  * client tracking cursors.
+ *
+ * A run that no longer exists is answered with 204, which the spec defines as
+ * "do not reconnect". Without that, a tab left open on a cleared run retries
+ * forever, and the reconnects surface as ECONNRESET noise in the dev proxy.
  */
 export function streamRun(
   runId: string,

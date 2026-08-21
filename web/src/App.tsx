@@ -34,7 +34,7 @@ export default function App() {
     document.documentElement.dataset.theme === "light" ? "light" : "dark",
   );
 
-  const { run, streamError, runError, watch } = useRun();
+  const { run, streamError, runError, watch, reset } = useRun();
   const [historyRefresh, setHistoryRefresh] = useState(0);
   const [mode, setMode] = useState<Mode>("single");
   const [batchId, setBatchId] = useState<string | null>(null);
@@ -222,7 +222,16 @@ export default function App() {
             <BatchUpload busy={batchSubmitting} issues={issues} onSubmit={submitBatch} />
           )}
 
-          <History activeId={run?.id ?? null} refreshKey={historyRefresh} onSelect={openHistoryRun} />
+          <History
+            activeId={run?.id ?? null}
+            refreshKey={historyRefresh}
+            onSelect={openHistoryRun}
+            onCleared={(removedIds) => {
+              // The stage is showing a run that no longer exists; leaving it up
+              // implies it is still there, and its stream is gone either way.
+              if (run && removedIds.includes(run.id)) reset();
+            }}
+          />
         </div>
 
         <main className="stage">
