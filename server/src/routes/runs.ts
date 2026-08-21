@@ -2,15 +2,39 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { availableModels } from "../agent/llm/index.js";
 import { config } from "../config.js";
-import { cancelRun, startRun } from "../orchestrator.js";
+import { buildProjectZip } from "../export.js";
+import { extractRequiredSecrets } from "../knowledge/extract.js";
+import { planFor } from "../lanes/capabilities.js";
+import { SECRET_ENV_PREFIX } from "../lanes/secrets.js";
+import { cancelRun, startExtend, startRun } from "../orchestrator.js";
+import { verify } from "../runner/verify.js";
 import { store } from "../store.js";
 import { PLATFORMS, isPlatform, type RunEvent } from "../types.js";
+
+/**
+ * Secret names are constrained to env-var shape because that is literally what
+ * they become in the runner's environment, and the value cap keeps a pasted
+ * certificate or token dump from ending up held in memory for the run.
+ */
+const SecretName = z
+  .string()
+  .regex(/^[A-Z][A-Z0-9_]{0,63}$/, "Secret names must be A–Z, 0–9 and _, starting with a letter.");
 
 const CreateRun = z
   .object({
     prompt: z.string().trim().min(10, "Describe the test case in a sentence or two.").max(4000),
     platforms: z.array(z.enum(PLATFORMS)).min(1, "Pick at least one platform."),
     headless: z.boolean().default(false),
+    // Path segment on disk, so anything that could climb out of the artifact
+    // tree is rejected outright rather than sanitised.
+    clientId: z
+      .string()
+      .trim()
+      .regex(/^[a-z0-9][a-z0-9-]{0,62}$/, "Client id must be lowercase letters, digits and hyphens.")
+      .default("default"),
+    secrets: z.record(SecretName, z.string().max(4096)).default({}),
+    // Extra cold repeats after a pass, to catch flaky specs before handing them off.
+    stabilityRuns: z.coerce.number().int().min(0).max(5).default(0),
     target: z
       .object({
         webUrl: z.string().trim().max(2048).optional(),
@@ -33,6 +57,10 @@ const CreateRun = z
   .refine((v) => !v.platforms.includes("ios") || !!v.target.iosApp, {
     message: "The iOS lane needs a cloud app id.",
     path: ["target", "iosApp"],
+  })
+  .refine((v) => Object.keys(v.secrets).length <= 20, {
+    message: "At most 20 secrets per run.",
+    path: ["secrets"],
   });
 
 export async function registerRunRoutes(app: FastifyInstance): Promise<void> {
@@ -79,6 +107,23 @@ export async function registerRunRoutes(app: FastifyInstance): Promise<void> {
     })),
   }));
 
+  /**
+   * Clear run history. Artifacts on disk and each client's accumulated suite
+   * are left alone — this forgets the record of runs, not their output.
+   */
+  app.delete("/api/runs", async () => {
+    const { cleared, kept } = store.clearHistory();
+    return { cleared, kept };
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/runs/:id", async (request, reply) => {
+    if (!store.get(request.params.id)) return reply.status(404).send({ error: "not_found" });
+    if (!store.forget(request.params.id)) {
+      return reply.status(409).send({ error: "That run is still in flight — cancel it before removing it." });
+    }
+    return { cleared: 1 };
+  });
+
   app.get<{ Params: { id: string } }>("/api/runs/:id", async (request, reply) => {
     const run = store.get(request.params.id);
     if (!run) return reply.status(404).send({ error: "not_found" });
@@ -108,6 +153,127 @@ export async function registerRunRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  /** Droppable-into-a-repo project: spec + wdio.conf.js + package.json + README, zipped. */
+  app.get<{ Params: { id: string; platform: string } }>(
+    "/api/runs/:id/:platform/export",
+    async (request, reply) => {
+      const { id, platform } = request.params;
+      if (!isPlatform(platform)) return reply.status(400).send({ error: "unknown_platform" });
+
+      const run = store.get(id);
+      const lane = store.lane(id, platform);
+      if (!run || !lane?.specCode) return reply.status(404).send({ error: "no_spec_yet" });
+
+      const zip = await buildProjectZip({ lane, platform, target: run.target, headless: run.headless });
+      return reply
+        .header("content-type", "application/zip")
+        .header("content-disposition", `attachment; filename="${platform}-spec-export.zip"`)
+        .send(zip);
+    },
+  );
+
+  /**
+   * Regression check: replay an already-generated spec against the site as it
+   * is right now, without exploring or synthesizing again. A green run once
+   * proves the spec worked on that day - this is how you find out whether a
+   * later deploy broke it, at a fraction of the cost of a fresh run.
+   */
+  app.post<{ Params: { id: string; platform: string } }>(
+    "/api/runs/:id/:platform/reverify",
+    async (request, reply) => {
+      const { id, platform } = request.params;
+      if (!isPlatform(platform)) return reply.status(400).send({ error: "unknown_platform" });
+
+      const run = store.get(id);
+      const lane = store.lane(id, platform);
+      if (!run || !lane?.specCode) return reply.status(404).send({ error: "no_spec_yet" });
+      if (lane.status === "running") return reply.status(409).send({ error: "lane_busy" });
+
+      const spec = lane.specCode;
+
+      /*
+       * Credentials live only for the run that received them, so by the time a
+       * regression check happens the vault for that run is empty. Running
+       * anyway makes the spec type `undefined` into the login form and report
+       * a failure that looks like the site broke — the single most misleading
+       * result this endpoint could produce. Refuse instead, and say what is
+       * missing.
+       */
+      const secrets = store.secrets(id);
+      const required = extractRequiredSecrets(spec, SECRET_ENV_PREFIX);
+      const missing = required.filter((name) => !secrets.names.includes(name));
+      if (missing.length > 0) {
+        return reply.status(409).send({
+          error: `This spec needs ${missing.join(", ")}, which are no longer held for this run. Credentials are kept only while the run that supplied them is in flight, so a regression check has to be given them again — submit the scenario as a new run with those values.`,
+        });
+      }
+
+      const plan = planFor(platform, run.target, run.headless);
+      const signal = new AbortController().signal;
+      const onLine = (line: string) => store.emit(id, { type: "verify.log", platform, line });
+
+      void (async () => {
+        store.emit(id, { type: "lane.status", platform, status: "running" });
+        store.emit(id, { type: "lane.phase", platform, phase: "verify" });
+        onLine("--- regression check: replaying the stored spec against the live target ---");
+
+        // A regression check re-runs an existing spec, so it needs whatever
+        // credentials that spec reads — without them a login-gated test fails
+        // for a reason that has nothing to do with the target changing.
+        const result = await verify({
+          runId: id,
+          clientId: run.clientId,
+          platform,
+          plan,
+          spec,
+          onLine,
+          signal,
+          secrets,
+        });
+
+        store.emit(id, { type: "lane.phase", platform, phase: "done" });
+        store.emit(id, {
+          type: "lane.status",
+          platform,
+          status: result.passed ? "passed" : "failed",
+          detail: result.passed
+            ? "Regression check passed - the stored spec still works against the current target."
+            : (result.reason ??
+              "Regression check failed - the target may have changed since this spec was generated."),
+        });
+      })();
+
+      return reply.status(202).send({ started: true });
+    },
+  );
+
+  /**
+   * Extend an already-passing spec with additional steps, as a new run built
+   * on the old one: the original steps are replayed mechanically (no AI
+   * cost) to reach the same end state, and only the additional part actually
+   * spends tokens on exploration and generation.
+   */
+  app.post<{ Params: { id: string; platform: string } }>(
+    "/api/runs/:id/:platform/extend",
+    async (request, reply) => {
+      const { id, platform } = request.params;
+      if (!isPlatform(platform)) return reply.status(400).send({ error: "unknown_platform" });
+
+      const parsed = z.object({ additionalPrompt: z.string().trim().min(10).max(4000) }).safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: "invalid_request",
+          issues: parsed.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
+        });
+      }
+
+      const result = startExtend(id, platform, parsed.data.additionalPrompt);
+      if ("error" in result) return reply.status(400).send({ error: result.error });
+
+      return reply.status(201).send({ id: result.run.id, run: result.run });
+    },
+  );
+
   /**
    * SSE stream. Sends the current snapshot first, then the missed event log,
    * then live events - so a client that connects late, or reconnects, lands in
@@ -115,7 +281,11 @@ export async function registerRunRoutes(app: FastifyInstance): Promise<void> {
    */
   app.get<{ Params: { id: string } }>("/api/runs/:id/stream", async (request, reply) => {
     const run = store.get(request.params.id);
-    if (!run) return reply.status(404).send({ error: "not_found" });
+    // 204, not 404. EventSource cannot see a status code and reconnects on any
+    // failure, so a tab left open on a run that has since been cleared would
+    // retry forever. 204 is the one response the spec defines as "stop": the
+    // browser closes the connection and does not come back.
+    if (!run) return reply.status(204).send();
 
     reply.raw.writeHead(200, {
       "content-type": "text/event-stream",
@@ -132,7 +302,11 @@ export async function registerRunRoutes(app: FastifyInstance): Promise<void> {
     send({ type: "run.snapshot", run });
     for (const event of store.history(run.id)) send(event);
 
-    if (run.finishedAt) {
+    // A run's original finish does not preclude a lane being live again right
+    // now - a regression re-check reuses the same run id and flips a lane
+    // back to "running" without touching run.finishedAt.
+    const anyLaneRunning = Object.values(run.lanes).some((lane) => lane.status === "running");
+    if (run.finishedAt && !anyLaneRunning) {
       reply.raw.end();
       return reply;
     }

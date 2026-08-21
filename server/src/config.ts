@@ -14,6 +14,8 @@ const Env = z.object({
   LLM_PROVIDER: z.enum(["anthropic", "groq", "openai", "ollama", "custom"]).default("anthropic"),
   LLM_API_KEY: z.string().optional(),
   LLM_MODEL: z.string().optional(),
+  /** Tried once, automatically, if LLM_MODEL gets rate-limited during synthesis/repair. */
+  LLM_FALLBACK_MODEL: z.string().optional(),
   LLM_BASE_URL: z.string().url().optional(),
   LLM_SUPPORTS_VISION: z.enum(["auto", "true", "false"]).default("auto"),
   LLM_MAX_RETRIES: z.coerce.number().int().min(0).max(10).default(4),
@@ -26,6 +28,12 @@ const Env = z.object({
    */
   EXPLORE_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(256).max(32_000).default(1_024),
   SYNTH_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(512).max(32_000).default(4_096),
+  PLANNER_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(512).max(32_000).default(2_048),
+  /** Token ceiling for the framework inventory sent with every planning call. */
+  PLANNER_INDEX_BUDGET: z.coerce.number().int().min(400).max(20_000).default(1_800),
+
+  /** Where the framework being worked on lives. */
+  FRAMEWORK_ROOT: z.string().optional(),
 
   // Convenience aliases so the usual variable name works for each provider.
   ANTHROPIC_API_KEY: z.string().optional(),
@@ -39,6 +47,12 @@ const Env = z.object({
 
   PORT: z.coerce.number().int().positive().default(8787),
   ARTIFACT_DIR: z.string().default("./artifacts"),
+  /**
+   * Where each client's accumulated suite lives. Defaults to the repo root
+   * rather than under server/ because these are the client's own projects —
+   * committable, runnable without this tool, and not an implementation detail.
+   */
+  CLIENTS_ROOT: z.string().default("./clients"),
 
   APPIUM_URL: z.string().url().default("http://127.0.0.1:4723"),
   ANDROID_DEVICE_NAME: z.string().optional(),
@@ -140,6 +154,8 @@ function resolveLlm() {
     sendScreenshots,
     leanTools,
     maxRetries: env.LLM_MAX_RETRIES,
+    // Same provider and key, just a different (usually lighter/higher-quota) model id.
+    fallbackModel: env.LLM_FALLBACK_MODEL ?? null,
   };
 }
 
@@ -176,6 +192,7 @@ export const config = {
   repoRoot,
   serverRoot: path.join(repoRoot, "server"),
   artifactDir: path.resolve(path.join(repoRoot, "server"), env.ARTIFACT_DIR),
+  clientsRoot: path.resolve(repoRoot, env.CLIENTS_ROOT),
   cloud: resolveCloud(),
   llm: resolveLlm(),
 };

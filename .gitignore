@@ -4,6 +4,13 @@ dist/
 .env.local
 server/artifacts/
 web/dist/
+
+# Per-client suites generated from verified runs. Each client's project is
+# theirs to own and version in their own repository, not history for this tool.
+clients/
+
+# Scratch copy of a sample framework used while building; not part of the tool.
+igs-wdio-framework-main/
 *.log
 *.tsbuildinfo
 .DS_Store

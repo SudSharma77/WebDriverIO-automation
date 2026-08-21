@@ -32,11 +32,26 @@ export interface LlmToolResult {
 
 export type StopReason = "end" | "tool_use" | "max_tokens" | "refusal" | "other";
 
+/** Both providers report this per response; kept to the two numbers every billing model actually cares about. */
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export function emptyUsage(): TokenUsage {
+  return { inputTokens: 0, outputTokens: 0 };
+}
+
+export function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
+  return { inputTokens: a.inputTokens + b.inputTokens, outputTokens: a.outputTokens + b.outputTokens };
+}
+
 export interface LlmTurn {
   text: string;
   toolCalls: LlmToolCall[];
   stopReason: StopReason;
   refusalReason?: string;
+  usage: TokenUsage;
 }
 
 /**
@@ -73,9 +88,21 @@ export interface LlmProvider {
     sendImages: boolean;
   }): LlmConversation;
 
-  /** One-shot multi-turn completion. Used by synthesis and repair. */
-  complete(opts: { system: string; turns: CompleteTurn[]; maxTokens: number }): Promise<string>;
+  /**
+   * One-shot multi-turn completion. Used by synthesis, repair and planning.
+   * `json: true` asks the provider for strict JSON where it supports it —
+   * open models are markedly more reliable with it than with prompting alone.
+   */
+  complete(opts: {
+    system: string;
+    turns: CompleteTurn[];
+    maxTokens: number;
+    json?: boolean;
+  }): Promise<{ text: string; usage: TokenUsage }>;
 
   /** Turn a provider error into something a user can act on. */
   describeError(err: unknown): string;
+
+  /** Whether this error is the provider's own 429, so a fallback model is worth trying. */
+  isRateLimited(err: unknown): boolean;
 }

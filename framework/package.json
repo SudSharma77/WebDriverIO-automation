@@ -1,0 +1,16 @@
+{
+  "name": "@testlab/framework",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The WebdriverIO runtime that generated specs are written against: resilient interactions, readable failures, and per-platform config factories.",
+  "exports": {
+    ".": "./runtime/index.mjs",
+    "./config": "./config/index.mjs"
+  },
+  "//": "Authored as plain ESM rather than TypeScript on purpose. Generated specs are JavaScript executed by `wdio run` with no ts-node in the chain, so a compile step between writing a spec and replaying it would be a build failure mode sitting in the middle of the verification path. Types ship as hand-written .d.ts alongside.",
+  "files": [
+    "runtime",
+    "config"
+  ]
+}

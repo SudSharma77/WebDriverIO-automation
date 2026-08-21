@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
+import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js";
 import { config } from "../config.js";
 import { llm, type LlmToolDef, type LlmToolResult } from "./llm/index.js";
+import { addUsage, emptyUsage, type TokenUsage } from "./llm/types.js";
 import { EXPLORER_SYSTEM, explorerTask } from "./prompts.js";
-import { convertToolResult } from "../mcp/bridge.js";
+import { coerceToolInput, convertToolResult } from "../mcp/bridge.js";
 import type { WdioMcp } from "../mcp/client.js";
 import type { LanePlan } from "../lanes/capabilities.js";
+import type { SecretBag } from "../lanes/secrets.js";
 import type { AgentStep, Platform, Screenshot } from "../types.js";
 
 export interface ExploreEmitter {
@@ -21,17 +24,23 @@ export interface ExploreResult {
   finalText: string;
   /** True when the agent ran out of budget rather than finishing. */
   exhausted: boolean;
+  usage: TokenUsage;
 }
 
 export interface ExploreArgs {
   mcp: WdioMcp;
   tools: LlmToolDef[];
+  /** Original MCP schemas, pre-widening - used to coerce a stringified boolean back before the tool sees it. */
+  mcpTools: McpTool[];
   prompt: string;
   platform: Platform;
   plan: LanePlan;
   budget: number;
   emit: ExploreEmitter;
   signal: AbortSignal;
+  secrets: SecretBag;
+  /** Static pre-fetch of the target page, if one was taken. Web lane only. */
+  siteSkim?: string | null;
 }
 
 /**
@@ -43,7 +52,8 @@ export interface ExploreArgs {
  * discovered at runtime, and the same shape across two different provider APIs.
  */
 export async function explore(args: ExploreArgs): Promise<ExploreResult> {
-  const { mcp, tools, prompt, platform, plan, budget, emit, signal } = args;
+  const { mcp, tools, mcpTools, prompt, platform, plan, budget, emit, signal, secrets, siteSkim } = args;
+  const toolByName = new Map(mcpTools.map((t) => [t.name, t]));
 
   const conversation = llm.startConversation({
     system: EXPLORER_SYSTEM,
@@ -53,8 +63,9 @@ export async function explore(args: ExploreArgs): Promise<ExploreResult> {
   });
 
   const transcript: string[] = [];
-  let next: string | LlmToolResult[] = explorerTask(prompt, platform, plan);
+  let next: string | LlmToolResult[] = explorerTask(prompt, platform, plan, secrets, siteSkim);
   let toolCalls = 0;
+  let usage = emptyUsage();
 
   for (;;) {
     signal.throwIfAborted();
@@ -65,13 +76,15 @@ export async function explore(args: ExploreArgs): Promise<ExploreResult> {
         conversation,
         `Tool budget exhausted (${budget} calls). Stop exploring now and write your final summary: did the scenario succeed, what steps did you perform, and what assertions prove the outcome?`,
       );
+      usage = addUsage(usage, closing.usage);
       if (closing.text) emit.text(closing.text);
       transcript.push(`\n[budget exhausted after ${budget} tool calls]`);
       if (closing.text) transcript.push(`\nAgent summary:\n${closing.text}`);
-      return { transcript: transcript.join("\n"), finalText: closing.text, exhausted: true };
+      return { transcript: transcript.join("\n"), finalText: closing.text, exhausted: true, usage };
     }
 
     const turn = await send(conversation, next);
+    usage = addUsage(usage, turn.usage);
 
     if (turn.stopReason === "refusal") {
       throw new Error(`The model declined to continue: ${turn.refusalReason ?? "no explanation given"}`);
@@ -87,7 +100,7 @@ export async function explore(args: ExploreArgs): Promise<ExploreResult> {
         transcript.push("\n[response truncated at max_tokens]");
       }
       transcript.push(`\nAgent summary:\n${turn.text}`);
-      return { transcript: transcript.join("\n"), finalText: turn.text, exhausted: false };
+      return { transcript: transcript.join("\n"), finalText: turn.text, exhausted: false, usage };
     }
 
     const results: LlmToolResult[] = [];
@@ -95,11 +108,17 @@ export async function explore(args: ExploreArgs): Promise<ExploreResult> {
       signal.throwIfAborted();
       toolCalls += 1;
 
-      const step: AgentStep = { id: call.id, name: call.name, input: call.input, at: Date.now() };
+      const mcpTool = toolByName.get(call.name);
+      const input = mcpTool ? coerceToolInput(mcpTool, call.input) : call.input;
+
+      const step: AgentStep = { id: call.id, name: call.name, input, at: Date.now() };
       emit.toolStarted(step);
 
-      const raw = await mcp.callTool(call.name, call.input);
-      const converted = convertToolResult(raw);
+      // Substitution happens after schema coercion and nowhere earlier: `input`
+      // keeps the placeholder the model wrote, so the recorded step and the
+      // transcript below show `{{PASSWORD}}` rather than the password.
+      const raw = await mcp.callTool(call.name, secrets.fill(input));
+      const converted = redactResult(convertToolResult(raw), secrets);
 
       // Screenshots always reach the UI; whether they also reach the model is a
       // cost decision made in config.
@@ -109,7 +128,7 @@ export async function explore(args: ExploreArgs): Promise<ExploreResult> {
 
       emit.toolFinished(call.id, !raw.isError, converted.summary);
       transcript.push(
-        `${raw.isError ? "x" : "+"} ${call.name}(${compactJson(call.input)}) -> ${converted.summary}`,
+        `${raw.isError ? "x" : "+"} ${call.name}(${compactJson(input)}) -> ${converted.summary}`,
       );
 
       results.push({
@@ -131,6 +150,23 @@ async function send(conversation: ReturnType<typeof llm.startConversation>, inpu
   } catch (err) {
     throw new Error(llm.describeError(err));
   }
+}
+
+/**
+ * Scrub credentials out of whatever the device sent back.
+ *
+ * A `get_elements` call after typing into a login form routinely returns the
+ * field's current value, and that text is about to be sent to the model, pushed
+ * to the browser, and folded into the transcript that synthesis reads. Redacting
+ * at the single point where device output enters the system covers all three.
+ */
+function redactResult(converted: ReturnType<typeof convertToolResult>, secrets: SecretBag) {
+  if (secrets.isEmpty) return converted;
+  return {
+    ...converted,
+    text: secrets.redact(converted.text),
+    summary: secrets.redact(converted.summary),
+  };
 }
 
 function compactJson(value: unknown): string {

@@ -1,10 +1,28 @@
-import type { Platform, RunEvent, RunState, RunTarget, ServerCapabilities } from "./types";
+import type {
+  BatchCase,
+  BatchState,
+  BatchSummary,
+  Platform,
+  RunEvent,
+  RunState,
+  RunSummary,
+  RunTarget,
+  ServerCapabilities,
+} from "./types";
 
 export interface CreateRunBody {
   prompt: string;
   platforms: Platform[];
   headless: boolean;
   target: RunTarget;
+  /** Which client's accumulated suite this run grows. */
+  clientId: string;
+  /**
+   * Login details, by name. Sent once to start the run and never returned:
+   * the server keeps them beside the run state, not on it.
+   */
+  secrets: Record<string, string>;
+  stabilityRuns?: number;
 }
 
 export class ApiError extends Error {
@@ -52,8 +70,76 @@ export async function cancelRun(id: string): Promise<void> {
   await fetch(`/api/runs/${id}/cancel`, { method: "POST" });
 }
 
+/** Replay an already-generated spec against the site as it is right now. */
+export async function reverifyLane(id: string, platform: Platform): Promise<void> {
+  const res = await fetch(`/api/runs/${id}/${platform}/reverify`, { method: "POST" });
+  if (!res.ok) throw new ApiError(`Could not start the regression check (${res.status}).`);
+}
+
+/** Build on an already-passing lane with additional steps, as a new run. */
+export async function extendRun(
+  id: string,
+  platform: Platform,
+  additionalPrompt: string,
+): Promise<{ id: string; run: RunState }> {
+  const res = await fetch(`/api/runs/${id}/${platform}/extend`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ additionalPrompt }),
+  });
+  return parse<{ id: string; run: RunState }>(res);
+}
+
 export function specDownloadUrl(runId: string, platform: Platform): string {
   return `/api/runs/${runId}/${platform}/spec`;
+}
+
+export function projectDownloadUrl(runId: string, platform: Platform): string {
+  return `/api/runs/${runId}/${platform}/export`;
+}
+
+export async function fetchRunHistory(): Promise<RunSummary[]> {
+  const { runs } = await parse<{ runs: RunSummary[] }>(await fetch("/api/runs"));
+  return runs;
+}
+
+/** Forget finished runs. Generated suites under clients/ are not touched. */
+export async function clearRunHistory(): Promise<{ cleared: number; kept: number }> {
+  return parse<{ cleared: number; kept: number }>(await fetch("/api/runs", { method: "DELETE" }));
+}
+
+export async function forgetRun(id: string): Promise<void> {
+  await parse<{ cleared: number }>(await fetch(`/api/runs/${id}`, { method: "DELETE" }));
+}
+
+export async function fetchRun(id: string): Promise<RunState> {
+  const { run } = await parse<{ run: RunState }>(await fetch(`/api/runs/${id}`));
+  return run;
+}
+
+export interface CreateBatchBody {
+  cases: BatchCase[];
+  platforms: Platform[];
+  headless: boolean;
+  stabilityRuns?: number;
+}
+
+export async function createBatch(body: CreateBatchBody): Promise<{ id: string; batch: BatchState }> {
+  const res = await fetch("/api/batches", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parse<{ id: string; batch: BatchState }>(res);
+}
+
+export async function fetchBatchList(): Promise<BatchSummary[]> {
+  const { batches } = await parse<{ batches: BatchSummary[] }>(await fetch("/api/batches"));
+  return batches;
+}
+
+export async function fetchBatch(id: string): Promise<{ batch: BatchState; runs: RunSummary[] }> {
+  return parse<{ batch: BatchState; runs: RunSummary[] }>(await fetch(`/api/batches/${id}`));
 }
 
 /**
@@ -62,6 +148,10 @@ export function specDownloadUrl(runId: string, platform: Platform): string {
  * EventSource reconnects on its own, and the server replays a snapshot plus the
  * event log on every connect — so a dropped connection self-heals without the
  * client tracking cursors.
+ *
+ * A run that no longer exists is answered with 204, which the spec defines as
+ * "do not reconnect". Without that, a tab left open on a cleared run retries
+ * forever, and the reconnects surface as ECONNRESET noise in the dev proxy.
  */
 export function streamRun(
   runId: string,

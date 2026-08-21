@@ -14,6 +14,18 @@ interface Props {
 const EXAMPLE =
   "Add the first product on the catalogue page to the cart, open the cart, and confirm it shows exactly one item with the correct name and price.";
 
+/**
+ * Pre-fill the name of a new credential row.
+ *
+ * Almost every login is a username and a password in that order, so filling
+ * those in costs nothing and removes the moment of "wait, what do I type here?"
+ * — while still being a plain editable value rather than a fixed field.
+ */
+function suggestName(existing: Array<{ name: string }>): string {
+  const taken = new Set(existing.map((secret) => secret.name.trim().toUpperCase()));
+  return ["USERNAME", "PASSWORD"].find((name) => !taken.has(name)) ?? "";
+}
+
 export function Composer({ capabilities, busy, issues, onSubmit, onCancel, canCancel }: Props) {
   const ids = {
     prompt: useId(),
@@ -21,15 +33,20 @@ export function Composer({ capabilities, busy, issues, onSubmit, onCancel, canCa
     androidApp: useId(),
     iosApp: useId(),
     iosDevice: useId(),
+    client: useId(),
+    stability: useId(),
   };
 
   const [prompt, setPrompt] = useState("");
   const [selected, setSelected] = useState<Platform[]>(["web"]);
   const [headless, setHeadless] = useState(false);
+  const [stabilityRuns, setStabilityRuns] = useState(0);
   const [webUrl, setWebUrl] = useState("");
   const [androidApp, setAndroidApp] = useState("");
   const [iosApp, setIosApp] = useState("");
   const [iosDeviceName, setIosDeviceName] = useState("iPhone 15 Pro");
+  const [clientId, setClientId] = useState("default");
+  const [secrets, setSecrets] = useState<Array<{ name: string; value: string }>>([]);
 
   const iosBlocked = capabilities !== null && !capabilities.iosAvailable;
 
@@ -47,13 +64,19 @@ export function Composer({ capabilities, busy, issues, onSubmit, onCancel, canCa
   const promptTooShort = prompt.trim().length > 0 && prompt.trim().length < 10;
   const canSubmit = !busy && prompt.trim().length >= 10 && selected.length > 0;
 
-  const submit = (event: React.FormEvent) => {
-    event.preventDefault();
+  const doSubmit = () => {
     if (!canSubmit) return;
     onSubmit({
       prompt: prompt.trim(),
       platforms: selected,
       headless,
+      clientId: clientId.trim() || "default",
+      secrets: Object.fromEntries(
+        secrets
+          .filter((secret) => secret.name.trim() && secret.value)
+          .map((secret) => [secret.name.trim().toUpperCase(), secret.value]),
+      ),
+      stabilityRuns,
       target: {
         webUrl: webUrl.trim() || undefined,
         androidApp: androidApp.trim() || undefined,
@@ -61,6 +84,23 @@ export function Composer({ capabilities, busy, issues, onSubmit, onCancel, canCa
         iosDeviceName: iosDeviceName.trim() || undefined,
       },
     });
+  };
+
+  const updateSecret = (index: number, patch: Partial<{ name: string; value: string }>) => {
+    setSecrets((current) => current.map((secret, i) => (i === index ? { ...secret, ...patch } : secret)));
+  };
+
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    doSubmit();
+  };
+
+  /** Ctrl/Cmd+Enter submits from inside the textarea without breaking normal Enter (newline). */
+  const onPromptKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      doSubmit();
+    }
   };
 
   return (
@@ -74,6 +114,7 @@ export function Composer({ capabilities, busy, issues, onSubmit, onCancel, canCa
           className="textarea"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
+          onKeyDown={onPromptKeyDown}
           placeholder={EXAMPLE}
           aria-invalid={promptTooShort || undefined}
           aria-describedby={`${ids.prompt}-hint`}
@@ -83,6 +124,8 @@ export function Composer({ capabilities, busy, issues, onSubmit, onCancel, canCa
           {promptTooShort
             ? "A little more detail — name the screen, the action and what proves it worked."
             : "Describe it as you would to a colleague. Name what proves the scenario passed."}
+          {" "}
+          <kbd>Ctrl/Cmd+Enter</kbd> to run.
         </p>
       </div>
 
@@ -209,6 +252,104 @@ export function Composer({ capabilities, busy, issues, onSubmit, onCancel, canCa
           <span className="platform-toggle__note">faster, no window</span>
         </label>
       )}
+
+      <fieldset disabled={busy}>
+        <legend>Credentials</legend>
+        <p className="field__hint" style={{ marginTop: 0 }}>
+          Add one row per value the login needs — usually a username and a password. Values go to the browser under
+          test and nowhere else; the saved spec reads them from the environment, so nothing is written to a file.
+        </p>
+
+        {secrets.length > 0 && (
+          <ul className="secrets">
+            <li className="secrets__row secrets__head" aria-hidden="true">
+              <span>Name</span>
+              <span>Value</span>
+              <span />
+            </li>
+            {secrets.map((secret, index) => (
+              <li className="secrets__row" key={index}>
+                <input
+                  className="input secrets__name"
+                  value={secret.name}
+                  onChange={(e) => updateSecret(index, { name: e.target.value })}
+                  placeholder="USERNAME"
+                  aria-label={`Credential ${index + 1} name`}
+                  spellCheck={false}
+                />
+                <input
+                  className="input"
+                  type="password"
+                  value={secret.value}
+                  onChange={(e) => updateSecret(index, { value: e.target.value })}
+                  placeholder="the value itself"
+                  aria-label={`Credential ${index + 1} value`}
+                  autoComplete="off"
+                />
+                <button
+                  className="btn btn--ghost secrets__remove"
+                  type="button"
+                  onClick={() => setSecrets((current) => current.filter((_, i) => i !== index))}
+                  aria-label={`Remove credential ${secret.name || index + 1}`}
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <button
+          className="btn btn--ghost"
+          type="button"
+          onClick={() => setSecrets((current) => [...current, { name: suggestName(current), value: "" }])}
+        >
+          {secrets.length === 0 ? "Add credential" : "Add another"}
+        </button>
+      </fieldset>
+
+      <div className="field">
+        <label className="field__label" htmlFor={ids.client}>
+          Client
+        </label>
+        <input
+          id={ids.client}
+          className="input"
+          value={clientId}
+          onChange={(e) => setClientId(e.target.value)}
+          placeholder="default"
+          pattern="[a-z0-9][a-z0-9-]*"
+          spellCheck={false}
+          aria-describedby={`${ids.client}-hint`}
+          aria-invalid={!!issueFor("clientId") || undefined}
+          disabled={busy}
+        />
+        <p className="field__hint" id={`${ids.client}-hint`}>
+          Whose suite this grows. Specs, page objects and locators accumulate under{" "}
+          <code>clients/{clientId.trim() || "default"}/</code> and are reused on the next run.
+        </p>
+        {issueFor("clientId") && <p className="field__error">{issueFor("clientId")}</p>}
+      </div>
+
+      <div className="field">
+        <label className="field__label" htmlFor={ids.stability}>
+          Stability check
+        </label>
+        <select
+          id={ids.stability}
+          className="input"
+          value={stabilityRuns}
+          onChange={(e) => setStabilityRuns(Number(e.target.value))}
+          disabled={busy}
+        >
+          <option value={0}>Off — one cold run is enough</option>
+          <option value={2}>Repeat 2 more times</option>
+          <option value={4}>Repeat 4 more times</option>
+        </select>
+        <p className="field__hint">
+          After a spec passes, replay it again cold to catch timing-dependent flakiness before you trust it.
+        </p>
+      </div>
 
       <div style={{ marginTop: "var(--space-5)", display: "grid", gap: "var(--space-2)" }}>
         <button className="btn btn--primary" type="submit" disabled={!canSubmit}>
