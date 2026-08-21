@@ -6,11 +6,28 @@ import { cancelRun, startRun } from "../orchestrator.js";
 import { store } from "../store.js";
 import { PLATFORMS, isPlatform, type RunEvent } from "../types.js";
 
+/**
+ * Secret names are constrained to env-var shape because that is literally what
+ * they become in the runner's environment, and the value cap keeps a pasted
+ * certificate or token dump from ending up held in memory for the run.
+ */
+const SecretName = z
+  .string()
+  .regex(/^[A-Z][A-Z0-9_]{0,63}$/, "Secret names must be A–Z, 0–9 and _, starting with a letter.");
+
 const CreateRun = z
   .object({
     prompt: z.string().trim().min(10, "Describe the test case in a sentence or two.").max(4000),
     platforms: z.array(z.enum(PLATFORMS)).min(1, "Pick at least one platform."),
     headless: z.boolean().default(false),
+    // Path segment on disk, so anything that could climb out of the artifact
+    // tree is rejected outright rather than sanitised.
+    clientId: z
+      .string()
+      .trim()
+      .regex(/^[a-z0-9][a-z0-9-]{0,62}$/, "Client id must be lowercase letters, digits and hyphens.")
+      .default("default"),
+    secrets: z.record(SecretName, z.string().max(4096)).default({}),
     target: z
       .object({
         webUrl: z.string().trim().max(2048).optional(),
@@ -33,6 +50,10 @@ const CreateRun = z
   .refine((v) => !v.platforms.includes("ios") || !!v.target.iosApp, {
     message: "The iOS lane needs a cloud app id.",
     path: ["target", "iosApp"],
+  })
+  .refine((v) => Object.keys(v.secrets).length <= 20, {
+    message: "At most 20 secrets per run.",
+    path: ["secrets"],
   });
 
 export async function registerRunRoutes(app: FastifyInstance): Promise<void> {

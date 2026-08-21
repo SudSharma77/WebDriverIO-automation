@@ -1,3 +1,26 @@
+import type { ReuseMode } from "./knowledge/types.js";
+
+/**
+ * What a passing run contributed to the client's project.
+ *
+ * Structural mirror of the knowledge layer's SaveReport, declared here because
+ * it crosses the wire to the browser; keeping the event contract in one file
+ * is what stops the UI and the server drifting apart.
+ */
+export interface SaveSummary {
+  specFile: string;
+  pages: Array<{
+    className: string;
+    created: boolean;
+    addedElements: string[];
+    addedMethods: string[];
+    changedLocators: Array<{ property: string; from: string; to: string }>;
+  }>;
+  locatorsAdded: string[];
+  locatorsChanged: string[];
+  reusedExistingSpec: boolean;
+}
+
 export const PLATFORMS = ["web", "android", "ios"] as const;
 export type Platform = (typeof PLATFORMS)[number];
 
@@ -34,6 +57,19 @@ export interface CreateRunInput {
   platforms: Platform[];
   target: RunTarget;
   headless?: boolean;
+  /**
+   * Which client this run belongs to. Runs are namespaced by it on disk so two
+   * clients' artifacts can never collide and each has its own audit trail.
+   */
+  clientId?: string;
+  /**
+   * Login details and other per-request secrets, by name (USERNAME, PASSWORD…).
+   *
+   * Deliberately NOT part of RunState: that whole object is streamed to the
+   * browser in `run.snapshot`. Values live only in the secret vault, keyed by
+   * run id, and reach the device through placeholder substitution.
+   */
+  secrets?: Record<string, string>;
 }
 
 export interface LaneState {
@@ -51,6 +87,10 @@ export interface LaneState {
   startedAt?: number;
   finishedAt?: number;
   toolCallCount: number;
+  /** How the request was satisfied, and why — shown, not just logged. */
+  reuse?: { mode: ReuseMode; reason: string };
+  /** What this lane contributed to the client's project. */
+  saved?: SaveSummary;
 }
 
 export interface AgentStep {
@@ -72,6 +112,7 @@ export interface Screenshot {
 
 export interface RunState {
   id: string;
+  clientId: string;
   prompt: string;
   target: RunTarget;
   headless: boolean;
@@ -79,6 +120,8 @@ export interface RunState {
   finishedAt?: number;
   lanes: Record<string, LaneState>;
   order: Platform[];
+  /** Secret NAMES only — never values. Lets the UI show what was injected. */
+  secretNames: string[];
 }
 
 export type RunEvent =
@@ -91,5 +134,9 @@ export type RunEvent =
   | { type: "screenshot"; platform: Platform; shot: Screenshot }
   | { type: "artifact"; platform: Platform; kind: "recorded" | "spec"; code: string; path?: string }
   | { type: "verify.log"; platform: Platform; line: string }
+  /** How much work this lane needed, decided before any of it started. */
+  | { type: "lane.reuse"; platform: Platform; mode: ReuseMode; reason: string }
+  /** What the run added to the client's project. */
+  | { type: "lane.saved"; platform: Platform; report: SaveSummary }
   | { type: "run.done"; runId: string }
   | { type: "error"; platform?: Platform; message: string };

@@ -5,6 +5,7 @@ import { EXPLORER_SYSTEM, explorerTask } from "./prompts.js";
 import { convertToolResult } from "../mcp/bridge.js";
 import type { WdioMcp } from "../mcp/client.js";
 import type { LanePlan } from "../lanes/capabilities.js";
+import type { SecretBag } from "../lanes/secrets.js";
 import type { AgentStep, Platform, Screenshot } from "../types.js";
 
 export interface ExploreEmitter {
@@ -32,6 +33,7 @@ export interface ExploreArgs {
   budget: number;
   emit: ExploreEmitter;
   signal: AbortSignal;
+  secrets: SecretBag;
 }
 
 /**
@@ -43,7 +45,7 @@ export interface ExploreArgs {
  * discovered at runtime, and the same shape across two different provider APIs.
  */
 export async function explore(args: ExploreArgs): Promise<ExploreResult> {
-  const { mcp, tools, prompt, platform, plan, budget, emit, signal } = args;
+  const { mcp, tools, prompt, platform, plan, budget, emit, signal, secrets } = args;
 
   const conversation = llm.startConversation({
     system: EXPLORER_SYSTEM,
@@ -53,7 +55,7 @@ export async function explore(args: ExploreArgs): Promise<ExploreResult> {
   });
 
   const transcript: string[] = [];
-  let next: string | LlmToolResult[] = explorerTask(prompt, platform, plan);
+  let next: string | LlmToolResult[] = explorerTask(prompt, platform, plan, secrets);
   let toolCalls = 0;
 
   for (;;) {
@@ -98,8 +100,11 @@ export async function explore(args: ExploreArgs): Promise<ExploreResult> {
       const step: AgentStep = { id: call.id, name: call.name, input: call.input, at: Date.now() };
       emit.toolStarted(step);
 
-      const raw = await mcp.callTool(call.name, call.input);
-      const converted = convertToolResult(raw);
+      // Placeholders become real values here and nowhere earlier: `call.input`
+      // stays as the model wrote it, so the transcript and the UI step list
+      // record `{{PASSWORD}}` rather than the password.
+      const raw = await mcp.callTool(call.name, secrets.fill(call.input));
+      const converted = redactResult(convertToolResult(raw), secrets);
 
       // Screenshots always reach the UI; whether they also reach the model is a
       // cost decision made in config.
@@ -131,6 +136,23 @@ async function send(conversation: ReturnType<typeof llm.startConversation>, inpu
   } catch (err) {
     throw new Error(llm.describeError(err));
   }
+}
+
+/**
+ * Scrub credentials out of whatever the device sent back.
+ *
+ * A `get_elements` call after typing into a login form routinely returns the
+ * field's current value, and that text is about to be sent to the model, pushed
+ * to the browser, and folded into the transcript that synthesis reads. Redacting
+ * at the single point where device output enters the system covers all three.
+ */
+function redactResult(converted: ReturnType<typeof convertToolResult>, secrets: SecretBag) {
+  if (secrets.isEmpty) return converted;
+  return {
+    ...converted,
+    text: secrets.redact(converted.text),
+    summary: secrets.redact(converted.summary),
+  };
 }
 
 function compactJson(value: unknown): string {

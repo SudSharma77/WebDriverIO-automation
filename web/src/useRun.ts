@@ -52,6 +52,10 @@ function applyToLane(lane: LaneState, event: RunEvent): LaneState {
         : { ...lane, specCode: event.code, specPath: event.path ?? lane.specPath };
     case "verify.log":
       return { ...lane, verifyLog: [...lane.verifyLog, event.line] };
+    case "lane.reuse":
+      return { ...lane, reuse: { mode: event.mode, reason: event.reason } };
+    case "lane.saved":
+      return { ...lane, saved: event.report };
     default:
       return lane;
   }

@@ -5,6 +5,13 @@ export interface CreateRunBody {
   platforms: Platform[];
   headless: boolean;
   target: RunTarget;
+  /** Which client's accumulated suite this run grows. */
+  clientId: string;
+  /**
+   * Login details, by name. Sent once to start the run and never returned:
+   * the server keeps them beside the run state, not on it.
+   */
+  secrets: Record<string, string>;
 }
 
 export class ApiError extends Error {

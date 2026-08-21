@@ -1,4 +1,5 @@
 import type { LanePlan } from "../lanes/capabilities.js";
+import type { SecretBag } from "../lanes/secrets.js";
 import type { Platform } from "../types.js";
 
 /**
@@ -29,16 +30,18 @@ When the scenario is complete (or provably blocked), write a final message with 
 2. The exact steps you performed, in order.
 3. The specific assertion(s) that prove the outcome, with the observed locator and expected value for each.`;
 
-export function explorerTask(prompt: string, platform: Platform, plan: LanePlan): string {
-  return [
-    `Platform: ${platform}`,
-    `Target: ${plan.entryPoint}`,
-    "",
-    "Test case to explore and verify:",
-    prompt.trim(),
-    "",
-    "Begin by observing the current screen.",
-  ].join("\n");
+export function explorerTask(
+  prompt: string,
+  platform: Platform,
+  plan: LanePlan,
+  secrets: SecretBag,
+): string {
+  const parts = [`Platform: ${platform}`, `Target: ${plan.entryPoint}`];
+
+  if (!secrets.isEmpty) parts.push("", secrets.briefing());
+
+  parts.push("", "Test case to explore and verify:", prompt.trim(), "", "Begin by observing the current screen.");
+  return parts.join("\n");
 }
 
 /** Also frozen — the recorded run and the transcript arrive in the user turn. */
@@ -48,12 +51,22 @@ You receive: the scenario in plain English, a transcript of what the agent actua
 
 Output requirements:
 - Emit ONE JavaScript file, ESM, targeting the WebdriverIO test runner with the Mocha framework. Use the globals the runner injects: \`browser\`, \`$\`, \`$$\`, \`expect\`. Do NOT import 'webdriverio', do NOT call remote(), do NOT create or close a session — the runner owns the session lifecycle.
+- Interact through the test framework's helpers, imported as: import { click, type, getText, isVisible, waitForGone, waitForPageLoad } from '@testlab/framework';
+  * click(selector, { label })            — waits for clickable, then clicks once
+  * type(selector, text, { label })       — waits, clears, types
+  * getText(selector, { label })          — waits for displayed, returns trimmed text
+  * isVisible(selector) -> boolean        — never throws
+  * waitForGone(selector)                 — waits for a spinner/modal to disappear
+  * waitForPageLoad()                     — waits for document.readyState complete
+  Always pass a human \`label\` ("the checkout button"): it names the element in the failure message when the selector misses.
+- Drop to raw \`$\`/\`$$\` only for something the helpers do not cover, and say why in a comment.
 - Structure it as describe(...) / it(...). One it() per scenario.
 - Use the selectors that were actually observed in the transcript. Never introduce a selector that does not appear there.
-- Every it() must end in at least one real assertion using \`expect\` (e.g. await expect($('~cart-badge')).toHaveText('1')). A spec with no assertion is a failure, not a test.
-- Prefer WebdriverIO's built-in auto-waiting and expect matchers over manual sleeps. If you truly need to wait for a condition, use waitUntil / waitForDisplayed with an explicit timeout — never browser.pause() as a synchronisation primitive.
+- Every it() must end in at least one real assertion using \`expect\` (e.g. await expect(await getText('~cart-badge')).toBe('1')). A spec with no assertion is a failure, not a test.
+- The helpers already wait. Never add browser.pause() as a synchronisation primitive; if you need a condition, use waitUntil with an explicit timeout.
 - Handle the platform's idioms: on web use browser.url(...) to navigate; on mobile do not navigate by URL, and use tap/click on observed elements.
 - Add a brief comment above each logical step describing the user-visible intent, not the mechanics.
+- If the transcript typed a credential placeholder such as {{PASSWORD}}, reproduce that placeholder verbatim in the spec as a bare string, e.g. await $('#password').setValue('{{PASSWORD}}'). It is rewritten into an environment read before the spec runs. Never substitute a literal credential, and never invent a placeholder the transcript did not use.
 
 Respond with the file contents inside a single \`\`\`javascript fenced block, and nothing else. No preamble, no explanation after.`;
 

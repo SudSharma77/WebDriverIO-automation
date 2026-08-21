@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { SecretBag } from "./lanes/secrets.js";
 import type { CreateRunInput, LaneState, Platform, RunEvent, RunState } from "./types.js";
 
 type Subscriber = (event: RunEvent) => void;
@@ -15,6 +16,15 @@ class RunStore {
   #runs = new Map<string, RunState>();
   #log = new Map<string, RunEvent[]>();
   #subscribers = new Map<string, Set<Subscriber>>();
+  /**
+   * Credentials, held beside RunState rather than on it.
+   *
+   * RunState is serialised wholesale into `run.snapshot` and sent to every SSE
+   * subscriber, so anything stored on it is effectively public to the browser.
+   * Keeping the bag in a parallel map makes that leak impossible by construction
+   * instead of by remembering to strip a field.
+   */
+  #secrets = new Map<string, SecretBag>();
 
   /** Newest-first, capped so a long-lived dev server does not grow unbounded. */
   static readonly MAX_RUNS = 50;
@@ -35,20 +45,41 @@ class RunStore {
       };
     }
 
+    const secrets = SecretBag.from(input.secrets);
+
     const run: RunState = {
       id,
+      clientId: input.clientId ?? "default",
       prompt: input.prompt,
       target: input.target,
       headless: input.headless ?? false,
       createdAt: Date.now(),
       lanes,
       order: input.platforms,
+      secretNames: secrets.names,
     };
 
     this.#runs.set(id, run);
     this.#log.set(id, []);
+    this.#secrets.set(id, secrets);
     this.#evict();
     return run;
+  }
+
+  /** The run's credentials. Server-side callers only — never serialise this. */
+  secrets(runId: string): SecretBag {
+    return this.#secrets.get(runId) ?? SecretBag.from({});
+  }
+
+  /**
+   * Drop the credentials once the run is over.
+   *
+   * Artifacts and logs outlive the run for the audit trail; the values that
+   * produced them should not. Called from the orchestrator's finally block, so
+   * it happens on cancellation and failure too, not just on success.
+   */
+  forgetSecrets(runId: string): void {
+    this.#secrets.delete(runId);
   }
 
   get(id: string): RunState | undefined {
@@ -156,6 +187,12 @@ class RunStore {
         lane.verifyLog.push(event.line);
         if (lane.verifyLog.length > 2000) lane.verifyLog.splice(0, lane.verifyLog.length - 2000);
         break;
+      case "lane.reuse":
+        lane.reuse = { mode: event.mode, reason: event.reason };
+        break;
+      case "lane.saved":
+        lane.saved = event.report;
+        break;
       default:
         break;
     }
@@ -166,6 +203,7 @@ class RunStore {
     for (const stale of runs.slice(RunStore.MAX_RUNS)) {
       this.#runs.delete(stale.id);
       this.#log.delete(stale.id);
+      this.#secrets.delete(stale.id);
     }
   }
 }

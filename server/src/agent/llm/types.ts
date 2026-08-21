@@ -73,8 +73,17 @@ export interface LlmProvider {
     sendImages: boolean;
   }): LlmConversation;
 
-  /** One-shot multi-turn completion. Used by synthesis and repair. */
-  complete(opts: { system: string; turns: CompleteTurn[]; maxTokens: number }): Promise<string>;
+  /**
+   * One-shot multi-turn completion. Used by synthesis, repair and planning.
+   * `json: true` asks the provider for strict JSON where it supports it —
+   * open models are markedly more reliable with it than with prompting alone.
+   */
+  complete(opts: {
+    system: string;
+    turns: CompleteTurn[];
+    maxTokens: number;
+    json?: boolean;
+  }): Promise<string>;
 
   /** Turn a provider error into something a user can act on. */
   describeError(err: unknown): string;

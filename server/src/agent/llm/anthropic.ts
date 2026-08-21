@@ -54,14 +54,24 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): LlmProv
       return conversation;
     },
 
-    async complete({ system, turns, maxTokens }) {
+    async complete({ system, turns, maxTokens, json }) {
+      const messages: Anthropic.MessageParam[] = turns.map((t) => ({ role: t.role, content: t.text }));
+
+      // Anthropic has no JSON mode; prefilling an opening brace is the
+      // documented equivalent and removes any prose preamble.
+      if (json && messages.at(-1)?.role === "user") {
+        messages.push({ role: "assistant", content: "{" });
+      }
+
       const response = await client.messages.create({
         model: opts.model,
         max_tokens: maxTokens,
         system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
-        messages: turns.map((t) => ({ role: t.role, content: t.text })),
+        messages,
       });
-      return textOf(response);
+
+      const text = textOf(response);
+      return json && !text.trimStart().startsWith("{") ? `{${text}` : text;
     },
 
     describeError(err) {

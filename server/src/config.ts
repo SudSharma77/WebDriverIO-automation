@@ -26,6 +26,12 @@ const Env = z.object({
    */
   EXPLORE_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(256).max(32_000).default(1_024),
   SYNTH_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(512).max(32_000).default(4_096),
+  PLANNER_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(512).max(32_000).default(2_048),
+  /** Token ceiling for the framework inventory sent with every planning call. */
+  PLANNER_INDEX_BUDGET: z.coerce.number().int().min(400).max(20_000).default(1_800),
+
+  /** Where the framework being worked on lives. */
+  FRAMEWORK_ROOT: z.string().optional(),
 
   // Convenience aliases so the usual variable name works for each provider.
   ANTHROPIC_API_KEY: z.string().optional(),
@@ -39,6 +45,12 @@ const Env = z.object({
 
   PORT: z.coerce.number().int().positive().default(8787),
   ARTIFACT_DIR: z.string().default("./artifacts"),
+  /**
+   * Where each client's accumulated suite lives. Defaults to the repo root
+   * rather than under server/ because these are the client's own projects —
+   * committable, runnable without this tool, and not an implementation detail.
+   */
+  CLIENTS_ROOT: z.string().default("./clients"),
 
   APPIUM_URL: z.string().url().default("http://127.0.0.1:4723"),
   ANDROID_DEVICE_NAME: z.string().optional(),
@@ -176,6 +188,7 @@ export const config = {
   repoRoot,
   serverRoot: path.join(repoRoot, "server"),
   artifactDir: path.resolve(path.join(repoRoot, "server"), env.ARTIFACT_DIR),
+  clientsRoot: path.resolve(repoRoot, env.CLIENTS_ROOT),
   cloud: resolveCloud(),
   llm: resolveLlm(),
 };

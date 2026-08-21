@@ -99,10 +99,11 @@ export function createOpenAiCompatibleProvider(opts: OpenAiCompatibleOptions): L
       return conversation;
     },
 
-    async complete({ system, turns, maxTokens }) {
+    async complete({ system, turns, maxTokens, json }) {
       const response = await client.chat.completions.create({
         model: opts.model,
         max_completion_tokens: maxTokens,
+        ...(json ? { response_format: { type: "json_object" as const } } : {}),
         messages: [
           { role: "system", content: system },
           ...turns.map((t) => ({ role: t.role, content: t.text }) as OpenAI.Chat.ChatCompletionMessageParam),

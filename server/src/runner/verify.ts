@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { config } from "../config.js";
 import type { LanePlan } from "../lanes/capabilities.js";
+import type { SecretBag } from "../lanes/secrets.js";
 import type { Platform } from "../types.js";
 
 export interface VerifyResult {
@@ -15,11 +16,30 @@ export interface VerifyResult {
 
 export interface VerifyArgs {
   runId: string;
+  clientId: string;
   platform: Platform;
   plan: LanePlan;
   spec: string;
   onLine: (line: string) => void;
   signal: AbortSignal;
+  secrets: SecretBag;
+  /**
+   * Where to write and run.
+   *
+   * Defaults to the run's artifact directory, which is right for a spec that
+   * stands alone. A spec that imports the client's page objects has to be
+   * verified inside the client's project instead, or those imports do not
+   * resolve — so the caller chooses.
+   */
+  workspace?: VerifyWorkspace;
+}
+
+export interface VerifyWorkspace {
+  /** Directory the config is written to; spec paths are relative to it. */
+  dir: string;
+  /** Subdirectory for the spec, relative to `dir`. */
+  specDir: string;
+  specName: string;
 }
 
 /**
@@ -31,14 +51,26 @@ export interface VerifyArgs {
  * product. Exploration passing proves nothing about the artifact.
  */
 export async function verify(args: VerifyArgs): Promise<VerifyResult> {
-  const dir = laneDir(args.runId, args.platform);
-  await fs.mkdir(path.join(dir, "test"), { recursive: true });
+  const workspace: VerifyWorkspace = args.workspace ?? {
+    dir: laneDir(args.clientId, args.runId, args.platform),
+    specDir: "test",
+    specName: "generated.e2e.js",
+  };
 
-  const specPath = path.join(dir, "test", "generated.e2e.js");
-  const confPath = path.join(dir, "wdio.conf.mjs");
+  const { dir } = workspace;
+  await fs.mkdir(path.join(dir, workspace.specDir), { recursive: true });
+
+  const specPath = path.join(dir, workspace.specDir, workspace.specName);
+  const confPath = path.join(dir, "wdio.verify.conf.mjs");
 
   await fs.writeFile(specPath, args.spec, "utf8");
-  await fs.writeFile(confPath, renderConfig(args.plan), "utf8");
+  // Scoped to this one file: the client's project may hold hundreds of specs,
+  // and verifying a new one must not run their whole suite.
+  await fs.writeFile(
+    confPath,
+    renderConfig(args.plan, `./${workspace.specDir}/${workspace.specName}`),
+    "utf8",
+  );
 
   const cli = await resolveWdioCli();
   if (!cli) {
@@ -53,7 +85,10 @@ export async function verify(args: VerifyArgs): Promise<VerifyResult> {
   const output: string[] = [];
   const emit = (chunk: string) => {
     for (const line of chunk.split(/\r?\n/)) {
-      const clean = stripAnsi(line).trimEnd();
+      // Redact before the line goes anywhere: this same text is streamed to the
+      // browser and fed verbatim into the repair prompt, and a failing
+      // assertion routinely prints the value it compared against.
+      const clean = args.secrets.redact(stripAnsi(line).trimEnd());
       if (!clean) continue;
       output.push(clean);
       args.onLine(clean);
@@ -65,11 +100,12 @@ export async function verify(args: VerifyArgs): Promise<VerifyResult> {
     // shim: since CVE-2024-27980, Node refuses to spawn a .cmd without a
     // shell, and turning the shell on to work around that would put
     // user-supplied paths through cmd.exe quoting. This sidesteps both.
-    const child = spawn(process.execPath, [cli, "run", "./wdio.conf.mjs"], {
+    const child = spawn(process.execPath, [cli, "run", "./wdio.verify.conf.mjs"], {
       cwd: dir,
       // Least privilege: the runner gets a PATH, a temp dir and the SDK vars it
-      // needs - never ANTHROPIC_API_KEY.
-      env: runnerEnv(),
+      // needs - never ANTHROPIC_API_KEY. The run's own credentials are added on
+      // top, which is the only way they reach the replayed spec.
+      env: { ...runnerEnv(), ...args.secrets.runnerEnv() },
       shell: false,
       windowsHide: true,
     });
@@ -124,8 +160,12 @@ export async function verify(args: VerifyArgs): Promise<VerifyResult> {
   });
 }
 
-export function laneDir(runId: string, platform: Platform): string {
-  return path.join(config.artifactDir, runId, platform);
+/**
+ * Artifacts are namespaced by client so two clients' runs can never collide,
+ * and one client's tree can be exported or deleted on its own.
+ */
+export function laneDir(clientId: string, runId: string, platform: Platform): string {
+  return path.join(config.artifactDir, clientId, runId, platform);
 }
 
 /**
@@ -158,7 +198,7 @@ async function resolveWdioCli(): Promise<string | null> {
   return null;
 }
 
-function renderConfig(plan: LanePlan): string {
+function renderConfig(plan: LanePlan, specGlob: string): string {
   const { runner } = plan;
   // The web lane lets WebdriverIO manage chromedriver itself; mobile lanes must
   // be pointed at Appium or the farm hub explicitly.
@@ -180,25 +220,19 @@ function renderConfig(plan: LanePlan): string {
     .split("\n")
     .join("\n  ");
 
+  // Built on the framework's own factory rather than a literal, so the settings
+  // a spec is verified under are byte-for-byte the ones a client gets when they
+  // import the same factory in their repo. Capabilities still come from the
+  // lane plan, which is the single place that knows about farms and vendors.
   return `// Generated by wdio-ai-test-lab. Rewritten on every run - edit the spec, not this file.
-export const config = {
-  runner: 'local',
-  specs: ['./test/**/*.js'],
-  maxInstances: 1,
+import { baseConfig } from '@testlab/framework/config';
+
+export const config = baseConfig({
+  specs: [${JSON.stringify(specGlob)}],
   capabilities: ${caps},
 ${endpoint}
-  logLevel: 'error',
-  bail: 1,
-  waitforTimeout: 15000,
-  connectionRetryTimeout: 120000,
-  connectionRetryCount: 2,
-  framework: 'mocha',
-  reporters: ['spec'],
-  mochaOpts: {
-    ui: 'bdd',
-    timeout: 120000,
-  },
-};
+  screenshotDir: '.',
+});
 `;
 }
 

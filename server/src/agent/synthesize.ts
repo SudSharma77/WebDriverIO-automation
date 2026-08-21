@@ -1,4 +1,5 @@
 import { config } from "../config.js";
+import { bindSecretsInSpec, unbindSecretsInSpec } from "../lanes/secrets.js";
 import { llm } from "./llm/index.js";
 import type { CompleteTurn } from "./llm/types.js";
 import { SYNTH_SYSTEM, synthTask } from "./prompts.js";
@@ -15,7 +16,18 @@ export interface SynthArgs {
 
 export async function synthesizeSpec(args: SynthArgs): Promise<string> {
   const text = await complete([{ role: "user", text: synthTask(args) }]);
-  return guardSpec(extractCode(text));
+  return finish(text);
+}
+
+/**
+ * Guard first, then bind.
+ *
+ * Running the guard on the model's own output keeps `process.env` completely
+ * forbidden to it, so the only environment reads that can appear in the finished
+ * spec are the credential placeholders we rewrote ourselves.
+ */
+function finish(text: string): string {
+  return bindSecretsInSpec(guardSpec(extractCode(text)));
 }
 
 /**
@@ -30,7 +42,7 @@ export async function synthesizeSpec(args: SynthArgs): Promise<string> {
 export async function repairSpec(args: SynthArgs & { spec: string; failure: string }): Promise<string> {
   const text = await complete([
     { role: "user", text: synthTask(args) },
-    { role: "assistant", text: "```javascript\n" + args.spec + "\n```" },
+    { role: "assistant", text: "```javascript\n" + unbindSecretsInSpec(args.spec) + "\n```" },
     {
       role: "user",
       text: [
@@ -45,7 +57,7 @@ export async function repairSpec(args: SynthArgs & { spec: string; failure: stri
       ].join("\n"),
     },
   ]);
-  return guardSpec(extractCode(text));
+  return finish(text);
 }
 
 async function complete(turns: CompleteTurn[]): Promise<string> {

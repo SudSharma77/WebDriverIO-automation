@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Prompt-to-test lab: describe a test case in English, get a verified WebdriverIO spec for Web, Android and iOS.",
   "workspaces": [
+    "framework",
     "server",
     "web"
   ],

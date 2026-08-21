@@ -24,6 +24,10 @@ export function startRun(input: CreateRunInput): RunState {
     } finally {
       inFlight.delete(run.id);
       store.emit(run.id, { type: "run.done", runId: run.id });
+      // Artifacts outlive the run for the audit trail; the credentials that
+      // produced them must not. In finally so cancellation and crashes clear
+      // them too, not just the happy path.
+      store.forgetSecrets(run.id);
     }
   })();
 

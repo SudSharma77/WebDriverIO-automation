@@ -34,6 +34,23 @@ export interface Screenshot {
   caption?: string;
 }
 
+/** How much work a request needed. Ordered cheapest first. */
+export type ReuseMode = "replayed" | "repaired" | "from-catalog" | "explored";
+
+export interface SaveSummary {
+  specFile: string;
+  pages: Array<{
+    className: string;
+    created: boolean;
+    addedElements: string[];
+    addedMethods: string[];
+    changedLocators: Array<{ property: string; from: string; to: string }>;
+  }>;
+  locatorsAdded: string[];
+  locatorsChanged: string[];
+  reusedExistingSpec: boolean;
+}
+
 export interface LaneState {
   platform: Platform;
   status: LaneStatus;
@@ -50,6 +67,8 @@ export interface LaneState {
   toolCallCount: number;
   /** Client-side only: the agent's running narration. */
   narration?: string[];
+  reuse?: { mode: ReuseMode; reason: string };
+  saved?: SaveSummary;
 }
 
 export interface RunTarget {
@@ -62,6 +81,7 @@ export interface RunTarget {
 
 export interface RunState {
   id: string;
+  clientId: string;
   prompt: string;
   target: RunTarget;
   headless: boolean;
@@ -69,6 +89,8 @@ export interface RunState {
   finishedAt?: number;
   lanes: Record<string, LaneState>;
   order: Platform[];
+  /** Names only — the server never sends credential values to the browser. */
+  secretNames: string[];
 }
 
 export type RunEvent =
@@ -81,6 +103,8 @@ export type RunEvent =
   | { type: "screenshot"; platform: Platform; shot: Screenshot }
   | { type: "artifact"; platform: Platform; kind: "recorded" | "spec"; code: string; path?: string }
   | { type: "verify.log"; platform: Platform; line: string }
+  | { type: "lane.reuse"; platform: Platform; mode: ReuseMode; reason: string }
+  | { type: "lane.saved"; platform: Platform; report: SaveSummary }
   | { type: "run.done"; runId: string }
   | { type: "error"; platform?: Platform; message: string };
 

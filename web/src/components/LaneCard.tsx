@@ -19,6 +19,68 @@ interface Props {
   onZoom: (dataUrl: string) => void;
 }
 
+const REUSE_LABEL: Record<NonNullable<LaneState["reuse"]>["mode"], string> = {
+  replayed: "Reused an existing test",
+  repaired: "Repaired an existing test",
+  "from-catalog": "Built from known elements",
+  explored: "Explored the app",
+};
+
+/**
+ * What this run cost, stated before it happens rather than inferred afterwards.
+ *
+ * This is the number the user is really tracking over time — a suite that keeps
+ * saying "Explored" is not accumulating anything, and that should be visible
+ * without reading a log.
+ */
+function ReuseNote({ reuse }: { reuse: NonNullable<LaneState["reuse"]> }) {
+  return (
+    <div className="reuse" data-mode={reuse.mode}>
+      <span className="reuse__badge">{REUSE_LABEL[reuse.mode]}</span>
+      <p className="reuse__reason">{reuse.reason}</p>
+    </div>
+  );
+}
+
+/** What the client's project gained — the durable half of a passing run. */
+function SavedNote({ saved }: { saved: NonNullable<LaneState["saved"]> }) {
+  const moved = saved.pages.flatMap((page) => page.changedLocators);
+
+  return (
+    <div className="saved">
+      <h4 className="saved__title">Saved to the suite</h4>
+      <ul className="saved__list">
+        <li>
+          <code>{saved.specFile}</code>
+          <span className="saved__note">{saved.reusedExistingSpec ? "already present" : "new"}</span>
+        </li>
+        {saved.pages.map((page) => (
+          <li key={page.className}>
+            <code>{page.className}</code>
+            <span className="saved__note">
+              {page.created ? "created" : "reused"}
+              {page.addedMethods.length > 0 && `, +${page.addedMethods.length} method${page.addedMethods.length === 1 ? "" : "s"}`}
+            </span>
+          </li>
+        ))}
+      </ul>
+
+      {moved.length > 0 && (
+        <div className="saved__moved">
+          <h5>Moved in this build</h5>
+          {moved.map((change) => (
+            <p key={change.property}>
+              <code>{change.property}</code>
+              <span aria-hidden="true"> — </span>
+              <s>{change.from}</s> → <strong>{change.to}</strong>
+            </p>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function LaneCard({ runId, lane, onZoom }: Props) {
   const [tab, setTab] = useState<TabKey>("steps");
   const baseId = useId();
@@ -72,7 +134,11 @@ export function LaneCard({ runId, lane, onZoom }: Props) {
         </div>
       </header>
 
+      {lane.reuse && <ReuseNote reuse={lane.reuse} />}
+
       <PhaseRail phase={lane.phase} status={lane.status} />
+
+      {lane.saved && <SavedNote saved={lane.saved} />}
 
       {showDetail && (
         <p className="lane__detail" data-tone={lane.status} role="status">
