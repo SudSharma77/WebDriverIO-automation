@@ -7,6 +7,7 @@ import type {
   LlmToolResult,
   LlmTurn,
   StopReason,
+  TokenUsage,
 } from "./types.js";
 
 export interface AnthropicProviderOptions {
@@ -71,7 +72,10 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): LlmProv
       });
 
       const text = textOf(response);
-      return json && !text.trimStart().startsWith("{") ? `{${text}` : text;
+      // Some models drop the opening brace when told to emit JSON; restoring it
+      // is cheaper and more reliable than a reprompt.
+      const repaired = json && !text.trimStart().startsWith("{") ? `{${text}` : text;
+      return { text: repaired, usage: usageOf(response) };
     },
 
     describeError(err) {
@@ -88,6 +92,10 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): LlmProv
         return `Anthropic API error ${err.status}: ${err.message}`;
       }
       return err instanceof Error ? err.message : String(err);
+    },
+
+    isRateLimited(err) {
+      return err instanceof Anthropic.RateLimitError;
     },
   };
 
@@ -133,6 +141,7 @@ function toTurn(response: Anthropic.Message): LlmTurn {
     toolCalls,
     stopReason: mapStop(response.stop_reason, toolCalls.length > 0),
     refusalReason: response.stop_details?.explanation ?? undefined,
+    usage: usageOf(response),
   };
 }
 
@@ -158,6 +167,15 @@ function textOf(response: Anthropic.Message): string {
     .map((b) => b.text)
     .join("\n")
     .trim();
+}
+
+/** Cache read/write tokens count toward input for display purposes - they're still input tokens, just cheaper ones. */
+function usageOf(response: Anthropic.Message): TokenUsage {
+  const usage = response.usage;
+  return {
+    inputTokens: usage.input_tokens + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0),
+    outputTokens: usage.output_tokens,
+  };
 }
 
 type MediaType = "image/png" | "image/jpeg" | "image/webp" | "image/gif";

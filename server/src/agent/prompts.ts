@@ -35,19 +35,78 @@ export function explorerTask(
   platform: Platform,
   plan: LanePlan,
   secrets: SecretBag,
+  siteSkim?: string | null,
 ): string {
-  const parts = [`Platform: ${platform}`, `Target: ${plan.entryPoint}`];
+  const parts = [`Platform: ${platform}`, `Target: ${plan.entryPoint}`, ""];
 
-  if (!secrets.isEmpty) parts.push("", secrets.briefing());
+  if (!secrets.isEmpty) parts.push(secrets.briefing(), "");
 
-  parts.push("", "Test case to explore and verify:", prompt.trim(), "", "Begin by observing the current screen.");
+  if (siteSkim) {
+    parts.push(
+      "Quick static skim of the target page (raw HTML, no JS run - may be incomplete or stale for a JS-heavy app; verify everything against what you actually observe):",
+      siteSkim,
+      "",
+    );
+  }
+
+  parts.push("Test case to explore and verify:", prompt.trim(), "", "Begin by observing the current screen.");
   return parts.join("\n");
 }
 
-/** Also frozen — the recorded run and the transcript arrive in the user turn. */
-export const SYNTH_SYSTEM = `You convert an exploratory WebdriverIO MCP session into a clean, runnable WebdriverIO test spec.
+/**
+ * Frozen. This is the structure phase: turn exploration into a fixed-shape
+ * plan before any code is written. The point is consistency — a one-line
+ * prompt and a paragraph-long one both go through the exact same template, so
+ * "simple" scenarios don't quietly skip steps that a more elaborate one would
+ * get. The code phase (SYNTH_SYSTEM below) then implements this plan exactly,
+ * rather than free-associating structure straight from the transcript.
+ */
+export const SCAFFOLD_SYSTEM = `You turn an exploratory WebdriverIO MCP session into a structured test plan. Not code yet — a plan.
 
-You receive: the scenario in plain English, a transcript of what the agent actually did on the device, and the raw JS that the MCP server recorded from those tool calls.
+You receive the scenario in plain English and a transcript of what the agent actually did on the device.
+
+Output ONLY this fixed structure, filled in from what was actually observed. Every section is mandatory even for a trivial one-step scenario — if a section would otherwise be empty, write "None", never omit the section:
+
+Test: <one-line title naming the behavior under test>
+Target: <platform and starting URL/entry point>
+Preconditions:
+- <state that must hold before the steps run — "None" if it starts from a fresh session>
+Steps:
+1. <one user-observable action, imperative mood, one action per line>
+2. ...
+Expected Result:
+- <one specific, checkable assertion — name the element and the expected value, not "it works">
+
+Rules:
+- Every step must be something that actually happened in the transcript. Never invent a step that was not observed.
+- Every Expected Result line must be checkable with a real assertion (visible text, an attribute, a URL, a count) — not a vague claim.
+- Keep steps atomic: one action per line, not "fill in the form and submit".
+- Respond with ONLY the structure above. No preamble, no code, no markdown fencing.`;
+
+export function scaffoldTask(args: {
+  prompt: string;
+  platform: Platform;
+  plan: LanePlan;
+  transcript: string;
+}): string {
+  return [
+    `Platform: ${args.platform}`,
+    `Target: ${args.plan.entryPoint}`,
+    "",
+    "Scenario (as the user described it):",
+    args.prompt.trim(),
+    "",
+    "Transcript of the exploratory run:",
+    args.transcript,
+  ].join("\n");
+}
+
+/** Also frozen — the recorded run, transcript, and structured plan arrive in the user turn. */
+export const SYNTH_SYSTEM = `You convert a structured test plan into a clean, runnable WebdriverIO test spec.
+
+You receive: the plan (Test / Target / Preconditions / Steps / Expected Result — produced in an earlier structuring pass), the scenario in plain English, a transcript of what the agent actually did on the device, and the raw JS that the MCP server recorded from those tool calls.
+
+Implement the plan exactly — one it() step per numbered Steps line, in the same order, and one real assertion per Expected Result line. Do not add steps the plan does not list, and do not drop or merge steps it does. The plan is the source of truth for structure; the transcript and recorded code are the source of truth for the concrete selectors and values.
 
 Output requirements:
 - Emit ONE JavaScript file, ESM, targeting the WebdriverIO test runner with the Mocha framework. Use the globals the runner injects: \`browser\`, \`$\`, \`$$\`, \`expect\`. Do NOT import 'webdriverio', do NOT call remote(), do NOT create or close a session — the runner owns the session lifecycle.
@@ -68,7 +127,150 @@ Output requirements:
 - Add a brief comment above each logical step describing the user-visible intent, not the mechanics.
 - If the transcript typed a credential placeholder such as {{PASSWORD}}, reproduce that placeholder verbatim in the spec as a bare string, e.g. await $('#password').setValue('{{PASSWORD}}'). It is rewritten into an environment read before the spec runs. Never substitute a literal credential, and never invent a placeholder the transcript did not use.
 
+Assertions — use ONLY real expect-webdriverio matchers, called exactly like this. Do not invent a matcher name (there is no \`toHaveUrlContaining\`, no \`toHaveTextContaining\` — these do not exist and will throw \`TypeError: ... is not a function\` at replay time):
+- toBeDisplayed() / toExist() / toBeClickable() / toBeEnabled() / toBeSelected()
+- toHaveText(str) / toHaveValue(str) / toHaveAttribute(attr, val) / toHaveClass(name)
+- toHaveUrl(str) / toHaveTitle(str)
+- toHaveLength(n) (on an array/collection, e.g. from $$())
+For a partial/substring match, pass the containing option instead of guessing a differently-named matcher: \`toHaveUrl(str, { containing: true })\`, \`toHaveText(str, { containing: true })\`. If truly unsure a matcher exists, assert a plain value instead: \`expect(await browser.getUrl()).toContain(str)\`.
+
+Native \`<select>\` dropdowns — never click() on an individual \`<option>\`. Native select options are rendered by the OS/browser chrome, not as independently interactable page elements, so \`click()\` or \`waitForDisplayed()\` on an \`<option>\` will time out even though the dropdown visibly opened. Use the select element's own commands instead: \`await $('#dropdown').selectByVisibleText('Option 2')\` or \`selectByAttribute('value', '2')\`. Do not click the select to "open" it first — these commands handle that themselves.
+
+Selector syntax — write selectors the way they were observed, preferring in this order:
+1. User-facing WDIO selectors: \`button=Exact Text\`, \`aria/Accessible Name\`.
+2. \`[data-testid="..."]\` when text/ARIA is unstable or absent.
+3. Accessibility id / resource-id on mobile (\`~my-id\`).
+Avoid brittle class-chain, layout-coupled, or absolute-XPath selectors even if one appeared in the recorded code — replace it with the nearest observed semantic alternative instead.
+
+Credentials — the transcript may contain a real value typed into a password/token/OTP field:
+- Keep the value (the spec must still be able to log in), but never log it in plaintext: use \`await el.setValue(value, { mask: true })\` for any field whose name, label, or type marks it as a credential.
+- Never write a comment that echoes the credential value.
+
+Suite hygiene — each generated spec runs cold and alone, so it must not assume state left by another run:
+- If the scenario depends on being logged out, or on a clean cart/form, reset that state explicitly (clear cookies/storage, or navigate to a known start point) rather than assuming it.
+
 Respond with the file contents inside a single \`\`\`javascript fenced block, and nothing else. No preamble, no explanation after.`;
+
+/**
+ * Frozen. A short, cheap pass run only after a lane ends up genuinely
+ * failed (post-repair) - turns the raw stack trace into something a human
+ * scanning a list of results (especially a bulk batch) can act on without
+ * opening the full log.
+ */
+export const FAILURE_SUMMARY_SYSTEM = `You explain, in ONE plain sentence, why a WebdriverIO test failed - for someone scanning a list of results, not debugging line by line.
+
+You receive the scenario, the raw error/output from a failed replay, and (if captured) the DOM snapshot at the moment of failure.
+
+Rules:
+- One sentence. No preamble, no markdown, no code, no trailing period-separated list.
+- Name the concrete cause (a selector that was not present, a wrong expected value, a timing issue, a genuinely invented WebdriverIO API) - never a vague restatement like "the test failed" or "an error occurred".
+- If the evidence points to the site/app behaving differently than the scenario expected — not a defect in the test itself — say so plainly.
+- Do not speculate beyond what the evidence in front of you actually supports.`;
+
+export function failureSummaryTask(args: { prompt: string; failure: string; domSnapshot?: string }): string {
+  const parts = ["Scenario:", args.prompt.trim(), "", "Failure output:", "```", args.failure.slice(-3000), "```"];
+
+  if (args.domSnapshot) {
+    parts.push(
+      "",
+      "DOM snapshot at the moment of failure (truncated):",
+      "```html",
+      args.domSnapshot.slice(0, 2000),
+      "```",
+    );
+  }
+
+  return parts.join("\n");
+}
+
+/**
+ * Frozen. Used only when extending an already-passing spec with additional
+ * steps. A smaller, targeted sibling of SCAFFOLD_SYSTEM: the old plan is
+ * given as fixed context, so this only has to describe what's new - it must
+ * not repeat or restate the existing Steps/Expected Result lines, both to
+ * save output tokens and because re-deriving them risks silently drifting
+ * from what was actually verified before.
+ */
+export const EXTEND_SCAFFOLD_SYSTEM = `You extend an existing structured test plan with new steps, from a transcript of additional exploration performed after the original scenario finished.
+
+You receive the ORIGINAL plan (already verified, do not repeat or rephrase it) and a transcript of what the agent did for the NEW, additional part only.
+
+Output ONLY the new lines to append, in this exact shape:
+
+Steps (continued):
+<N+1>. <one user-observable action, imperative mood>
+<N+2>. ...
+Expected Result (additional):
+- <one specific, checkable assertion>
+
+Where N is the number of steps already in the original plan (continue numbering from there). Rules:
+- Every new step must be something that actually happened in the new transcript. Never invent one.
+- Do not restate, renumber, or rephrase any step from the original plan - only add what is new.
+- Every new Expected Result line must be checkable with a real assertion, not a vague claim.
+- Respond with ONLY the two sections above. No preamble, no code.`;
+
+export function extendScaffoldTask(args: {
+  additionalPrompt: string;
+  platform: Platform;
+  plan: LanePlan;
+  originalScaffold: string;
+  transcript: string;
+}): string {
+  return [
+    `Platform: ${args.platform}`,
+    `Target: ${args.plan.entryPoint}`,
+    "",
+    "Original plan (already verified - do not repeat):",
+    args.originalScaffold,
+    "",
+    "Additional scenario to extend it with:",
+    args.additionalPrompt.trim(),
+    "",
+    "Transcript of the additional exploration:",
+    args.transcript,
+  ].join("\n");
+}
+
+export function extendSynthTask(args: {
+  additionalPrompt: string;
+  platform: Platform;
+  plan: LanePlan;
+  mergedScaffold: string;
+  existingCode: string;
+  transcript: string;
+  recorded: string | null;
+}): string {
+  const parts = [
+    `Platform: ${args.platform}`,
+    `Target: ${args.plan.entryPoint}`,
+    "",
+    "This is an EXTENSION of an already-passing spec, not a fresh one. The merged plan below includes the original steps (already implemented and verified) plus new ones just added:",
+    args.mergedScaffold,
+    "",
+    "Existing file — keep every line of this exactly as it is; add the new steps at the end of the same it() block, immediately before its closing lines:",
+    "```javascript",
+    args.existingCode,
+    "```",
+    "",
+    "Additional scenario that was just explored (implement only this as new code):",
+    args.additionalPrompt.trim(),
+    "",
+    "Transcript of the additional exploration only:",
+    args.transcript,
+  ];
+
+  if (args.recorded) {
+    parts.push(
+      "",
+      "Raw code recorded by the MCP server for the additional exploration (session boilerplate included — strip it, keep the interactions):",
+      "```javascript",
+      args.recorded,
+      "```",
+    );
+  }
+
+  return parts.join("\n");
+}
 
 export function synthTask(args: {
   prompt: string;
@@ -76,10 +278,14 @@ export function synthTask(args: {
   plan: LanePlan;
   transcript: string;
   recorded: string | null;
+  scaffold: string;
 }): string {
   const parts = [
     `Platform: ${args.platform}`,
     `Target: ${args.plan.entryPoint}`,
+    "",
+    "Structured plan (implement this exactly — see the system instructions):",
+    args.scaffold,
     "",
     "Scenario (as the user described it):",
     args.prompt.trim(),

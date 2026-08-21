@@ -1,16 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { SecretBag } from "./lanes/secrets.js";
-import type { CreateRunInput, LaneState, Platform, RunEvent, RunState } from "./types.js";
+import { deleteRun, loadAllRuns, saveRun } from "./persist.js";
+import type { CreateRunInput, LaneState, Platform, RunEvent, RunState, RunTarget } from "./types.js";
 
 type Subscriber = (event: RunEvent) => void;
 
 /**
- * In-memory run store with a per-run event log and fan-out to SSE subscribers.
- *
- * Tradeoff: state dies with the process, so a restart mid-run orphans the run
- * (the child processes are killed with it, so nothing leaks). That is the right
- * call for a single-node tool; a multi-node deployment would need the log in
- * Redis/Postgres and the lanes in a real queue.
+ * Run store with a per-run event log, fan-out to SSE subscribers, and a
+ * debounced JSON snapshot on disk (see persist.ts) so a `tsx watch` reload or
+ * a real restart does not orphan run history. The live event log and
+ * subscriber fan-out are still in-memory only - only the run's current
+ * snapshot survives a restart, not a mid-flight SSE replay buffer, which is
+ * the right tradeoff for a single-node tool.
  */
 class RunStore {
   #runs = new Map<string, RunState>();
@@ -20,11 +21,27 @@ class RunStore {
    * Credentials, held beside RunState rather than on it.
    *
    * RunState is serialised wholesale into `run.snapshot` and sent to every SSE
-   * subscriber, so anything stored on it is effectively public to the browser.
-   * Keeping the bag in a parallel map makes that leak impossible by construction
-   * instead of by remembering to strip a field.
+   * subscriber, and is now also persisted to disk — so anything stored on it is
+   * effectively public. Keeping the bag in a parallel map makes that leak
+   * impossible by construction instead of by remembering to strip a field.
    */
   #secrets = new Map<string, SecretBag>();
+  #saveTimers = new Map<string, NodeJS.Timeout>();
+
+  /** Load persisted runs before the server starts accepting requests. */
+  async hydrate(): Promise<void> {
+    for (const run of await loadAllRuns()) {
+      // A run.json written before token-usage tracking existed has no
+      // `usage` field on its lanes - backfill zero so #apply's arithmetic
+      // never hits undefined.
+      for (const lane of Object.values(run.lanes)) {
+        lane.usage ??= { inputTokens: 0, outputTokens: 0 };
+      }
+      this.#runs.set(run.id, run);
+      this.#log.set(run.id, []);
+    }
+    this.#evict();
+  }
 
   /** Newest-first, capped so a long-lived dev server does not grow unbounded. */
   static readonly MAX_RUNS = 50;
@@ -42,6 +59,7 @@ class RunStore {
         screenshots: [],
         verifyLog: [],
         toolCallCount: 0,
+        usage: { inputTokens: 0, outputTokens: 0 },
       };
     }
 
@@ -53,6 +71,7 @@ class RunStore {
       prompt: input.prompt,
       target: input.target,
       headless: input.headless ?? false,
+      stabilityRuns: input.stabilityRuns ?? 0,
       createdAt: Date.now(),
       lanes,
       order: input.platforms,
@@ -92,6 +111,25 @@ class RunStore {
 
   lane(runId: string, platform: Platform): LaneState | undefined {
     return this.#runs.get(runId)?.lanes[platform];
+  }
+
+  /**
+   * Most recent prior run with the exact same prompt + target for this
+   * platform that produced a spec. The caller tries replaying that spec cold
+   * before paying for a fresh explore+synthesize - free and fast when the
+   * target hasn't changed, and only falls back to full generation when it
+   * genuinely no longer passes.
+   */
+  findCachedSpec(prompt: string, platform: Platform, target: RunTarget): string | null {
+    const key = fingerprint(prompt, platform, target);
+    if (!key) return null;
+
+    for (const run of this.list()) {
+      const lane = run.lanes[platform];
+      if (!lane?.specCode) continue;
+      if (fingerprint(run.prompt, platform, run.target) === key) return lane.specCode;
+    }
+    return null;
   }
 
   /** Replay for a client that subscribes after the run started. */
@@ -135,6 +173,24 @@ class RunStore {
         // A broken pipe on one SSE client must not abort the run.
       }
     }
+
+    this.#scheduleSave(run);
+  }
+
+  /**
+   * Debounced so a burst of tool-call/screenshot events during exploration
+   * collapses into one disk write instead of one per event.
+   */
+  #scheduleSave(run: RunState): void {
+    const existing = this.#saveTimers.get(run.id);
+    if (existing) clearTimeout(existing);
+    this.#saveTimers.set(
+      run.id,
+      setTimeout(() => {
+        this.#saveTimers.delete(run.id);
+        void saveRun(run);
+      }, 250),
+    );
   }
 
   #apply(run: RunState, event: RunEvent): void {
@@ -179,6 +235,10 @@ class RunStore {
       case "artifact":
         if (event.kind === "recorded") lane.recordedCode = event.code;
         else {
+          // Only a genuine content change counts as "the repair pass rewrote
+          // this" - the final re-emit (same code, now with a path attached)
+          // must not overwrite the diff baseline with itself.
+          if (lane.specCode && lane.specCode !== event.code) lane.previousSpecCode = lane.specCode;
           lane.specCode = event.code;
           lane.specPath = event.path;
         }
@@ -193,6 +253,12 @@ class RunStore {
       case "lane.saved":
         lane.saved = event.report;
         break;
+      case "lane.usage":
+        lane.usage = {
+          inputTokens: lane.usage.inputTokens + event.usage.inputTokens,
+          outputTokens: lane.usage.outputTokens + event.usage.outputTokens,
+        };
+        break;
       default:
         break;
     }
@@ -204,8 +270,29 @@ class RunStore {
       this.#runs.delete(stale.id);
       this.#log.delete(stale.id);
       this.#secrets.delete(stale.id);
+      void deleteRun(stale.id);
     }
   }
+}
+
+/**
+ * Normalized enough that trivial formatting differences (extra whitespace,
+ * casing, a trailing slash) don't defeat the cache, but nothing fuzzier -
+ * a genuinely different prompt should genuinely re-explore, not silently
+ * reuse a plausibly-similar old spec.
+ */
+function fingerprint(prompt: string, platform: Platform, target: RunTarget): string | null {
+  const normalizedPrompt = prompt.trim().toLowerCase().replace(/\s+/g, " ");
+  const targetValue =
+    platform === "web"
+      ? target.webUrl
+      : platform === "android"
+        ? target.androidApp
+        : target.iosApp;
+  if (!normalizedPrompt || !targetValue) return null;
+
+  const normalizedTarget = targetValue.trim().toLowerCase().replace(/\/+$/, "");
+  return `${platform}::${normalizedTarget}::${normalizedPrompt}`;
 }
 
 export const store = new RunStore();

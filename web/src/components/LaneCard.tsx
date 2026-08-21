@@ -1,8 +1,11 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { specDownloadUrl } from "../api";
-import { PLATFORM_GLYPH, PLATFORM_LABEL, type LaneState } from "../types";
+import { projectDownloadUrl, specDownloadUrl } from "../api";
+import { diffLines } from "../diff";
+import { highlightJs } from "../highlight";
+import { PLATFORM_GLYPH, PLATFORM_LABEL, type LaneState, type Platform } from "../types";
 import { PhaseRail } from "./PhaseRail";
 import { StatusPill } from "./StatusPill";
+import { TokenBadge } from "./TokenBadge";
 
 type TabKey = "steps" | "screens" | "spec" | "logs";
 
@@ -17,6 +20,8 @@ interface Props {
   runId: string;
   lane: LaneState;
   onZoom: (dataUrl: string) => void;
+  onReverify: (platform: Platform) => void;
+  onExtend: (platform: Platform, additionalPrompt: string) => void;
 }
 
 const REUSE_LABEL: Record<NonNullable<LaneState["reuse"]>["mode"], string> = {
@@ -81,7 +86,7 @@ function SavedNote({ saved }: { saved: NonNullable<LaneState["saved"]> }) {
   );
 }
 
-export function LaneCard({ runId, lane, onZoom }: Props) {
+export function LaneCard({ runId, lane, onZoom, onReverify, onExtend }: Props) {
   const [tab, setTab] = useState<TabKey>("steps");
   const baseId = useId();
   const tablistRef = useRef<HTMLDivElement>(null);
@@ -127,6 +132,8 @@ export function LaneCard({ runId, lane, onZoom }: Props) {
           <div className="lane__meta">
             {lane.toolCallCount} action{lane.toolCallCount === 1 ? "" : "s"}
             {lane.startedAt && lane.finishedAt ? ` · ${Math.round((lane.finishedAt - lane.startedAt) / 1000)}s` : ""}
+            {" "}
+            <TokenBadge usage={lane.usage} />
           </div>
         </div>
         <div className="lane__head-right">
@@ -174,8 +181,10 @@ export function LaneCard({ runId, lane, onZoom }: Props) {
       >
         {tab === "steps" && <Steps lane={lane} />}
         {tab === "screens" && <Screens lane={lane} onZoom={onZoom} />}
-        {tab === "spec" && <Spec runId={runId} lane={lane} />}
-        {tab === "logs" && <Logs lane={lane} />}
+        {tab === "spec" && (
+          <Spec runId={runId} lane={lane} onExtend={(text) => onExtend(lane.platform, text)} />
+        )}
+        {tab === "logs" && <Logs lane={lane} onReverify={() => onReverify(lane.platform)} />}
       </div>
     </section>
   );
@@ -235,8 +244,12 @@ function Screens({ lane, onZoom }: { lane: LaneState; onZoom: (dataUrl: string) 
   );
 }
 
-function Spec({ runId, lane }: { runId: string; lane: LaneState }) {
+function Spec({ runId, lane, onExtend }: { runId: string; lane: LaneState; onExtend: (text: string) => void }) {
   const [copied, setCopied] = useState(false);
+  const hasDiff = !!lane.previousSpecCode && lane.previousSpecCode !== lane.specCode;
+  const [showDiff, setShowDiff] = useState(hasDiff);
+  const [extending, setExtending] = useState(false);
+  const [extendText, setExtendText] = useState("");
 
   if (!lane.specCode) {
     return (
@@ -257,24 +270,87 @@ function Spec({ runId, lane }: { runId: string; lane: LaneState }) {
     }
   };
 
+  const canExtend = lane.status === "passed";
+
+  const submitExtend = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (extendText.trim().length < 10) return;
+    onExtend(extendText.trim());
+    setExtendText("");
+    setExtending(false);
+  };
+
   return (
     <>
       <div className="panel-actions">
+        {hasDiff && (
+          <button className="btn btn--ghost" type="button" onClick={() => setShowDiff((v) => !v)}>
+            {showDiff ? "Show final code" : "Show repair diff"}
+          </button>
+        )}
         <button className="btn btn--ghost" type="button" onClick={copy}>
           {copied ? "Copied" : "Copy"}
         </button>
         <a className="btn btn--ghost" href={specDownloadUrl(runId, lane.platform)} download>
-          Download
+          Download spec
         </a>
+        <a className="btn btn--ghost" href={projectDownloadUrl(runId, lane.platform)} download>
+          Export project (.zip)
+        </a>
+        {canExtend && (
+          <button className="btn btn--ghost" type="button" onClick={() => setExtending((v) => !v)}>
+            {extending ? "Cancel" : "Extend this test"}
+          </button>
+        )}
       </div>
-      <pre className="code">
-        <code>{lane.specCode}</code>
-      </pre>
+      {canExtend && extending && (
+        <form className="extend-form" onSubmit={submitExtend}>
+          <textarea
+            className="textarea"
+            rows={2}
+            value={extendText}
+            onChange={(e) => setExtendText(e.target.value)}
+            placeholder="Add more steps to this scenario — e.g. Then also verify the total price updates."
+            autoFocus
+          />
+          <p className="field__hint">
+            The existing steps replay for free (no AI cost); only this additional part spends tokens.
+          </p>
+          <button className="btn btn--primary" type="submit" disabled={extendText.trim().length < 10}>
+            Run extension
+          </button>
+        </form>
+      )}
+      {showDiff && hasDiff ? (
+        <SpecDiff before={lane.previousSpecCode!} after={lane.specCode} />
+      ) : (
+        <pre className="code">
+          <code>{highlightJs(lane.specCode)}</code>
+        </pre>
+      )}
     </>
   );
 }
 
-function Logs({ lane }: { lane: LaneState }) {
+function SpecDiff({ before, after }: { before: string; after: string }) {
+  const lines = diffLines(before, after);
+  return (
+    <pre className="code code--diff">
+      <code>
+        {lines.map((line, i) => (
+          <div className="diff-line" data-type={line.type} key={i}>
+            <span className="diff-line__marker" aria-hidden="true">
+              {line.type === "add" ? "+" : line.type === "remove" ? "−" : " "}
+            </span>
+            {highlightJs(line.text)}
+          </div>
+        ))}
+      </code>
+    </pre>
+  );
+}
+
+function Logs({ lane, onReverify }: { lane: LaneState; onReverify: () => void }) {
   const ref = useRef<HTMLPreElement>(null);
 
   // Follow the tail while the run is live, but never yank the view away from
@@ -286,13 +362,25 @@ function Logs({ lane }: { lane: LaneState }) {
     if (atBottom) el.scrollTop = el.scrollHeight;
   }, [lane.verifyLog.length]);
 
-  if (lane.verifyLog.length === 0) {
-    return <Empty title="No run log yet" body="Output from the WebdriverIO replay lands here." />;
-  }
+  const canReverify = !!lane.specCode && lane.status !== "running" && lane.status !== "queued";
+
   return (
-    <pre className="log" ref={ref}>
-      {lane.verifyLog.join("\n")}
-    </pre>
+    <>
+      {canReverify && (
+        <div className="panel-actions">
+          <button className="btn btn--ghost" type="button" onClick={onReverify}>
+            Re-check against live site
+          </button>
+        </div>
+      )}
+      {lane.verifyLog.length === 0 ? (
+        <Empty title="No run log yet" body="Output from the WebdriverIO replay lands here." />
+      ) : (
+        <pre className="log" ref={ref}>
+          {lane.verifyLog.join("\n")}
+        </pre>
+      )}
+    </>
   );
 }
 

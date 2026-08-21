@@ -7,7 +7,9 @@ import type {
   LlmToolResult,
   LlmTurn,
   StopReason,
+  TokenUsage,
 } from "./types.js";
+import { emptyUsage } from "./types.js";
 
 export interface OpenAiCompatibleOptions {
   /** "groq", "openai", "ollama", … — surfaced in logs and errors. */
@@ -92,7 +94,7 @@ export function createOpenAiCompatibleProvider(opts: OpenAiCompatibleOptions): L
           // to be answered by a matching tool message next turn.
           messages.push(choice.message);
 
-          return toTurn(choice);
+          return toTurn(choice, usageOf(response));
         },
       };
 
@@ -109,7 +111,7 @@ export function createOpenAiCompatibleProvider(opts: OpenAiCompatibleOptions): L
           ...turns.map((t) => ({ role: t.role, content: t.text }) as OpenAI.Chat.ChatCompletionMessageParam),
         ],
       });
-      return response.choices[0]?.message.content?.trim() ?? "";
+      return { text: response.choices[0]?.message.content?.trim() ?? "", usage: usageOf(response) };
     },
 
     describeError(err) {
@@ -136,6 +138,10 @@ export function createOpenAiCompatibleProvider(opts: OpenAiCompatibleOptions): L
       }
       return err instanceof Error ? err.message : String(err);
     },
+
+    isRateLimited(err) {
+      return err instanceof OpenAI.RateLimitError;
+    },
   };
 
   return provider;
@@ -152,7 +158,7 @@ function toOpenAiTool(tool: LlmToolDef): OpenAI.Chat.ChatCompletionTool {
   };
 }
 
-function toTurn(choice: OpenAI.Chat.ChatCompletion.Choice): LlmTurn {
+function toTurn(choice: OpenAI.Chat.ChatCompletion.Choice, usage: TokenUsage): LlmTurn {
   const toolCalls = (choice.message.tool_calls ?? []).flatMap((call) => {
     if (call.type !== "function") return [];
     return [{ id: call.id, name: call.function.name, input: parseArguments(call.function.arguments) }];
@@ -163,7 +169,13 @@ function toTurn(choice: OpenAI.Chat.ChatCompletion.Choice): LlmTurn {
     toolCalls,
     stopReason: mapStop(choice.finish_reason, toolCalls.length > 0),
     refusalReason: choice.message.refusal ?? undefined,
+    usage,
   };
+}
+
+function usageOf(response: OpenAI.Chat.ChatCompletion): TokenUsage {
+  if (!response.usage) return emptyUsage();
+  return { inputTokens: response.usage.prompt_tokens, outputTokens: response.usage.completion_tokens };
 }
 
 /**

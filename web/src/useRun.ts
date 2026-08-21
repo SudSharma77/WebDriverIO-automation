@@ -56,6 +56,14 @@ function applyToLane(lane: LaneState, event: RunEvent): LaneState {
       return { ...lane, reuse: { mode: event.mode, reason: event.reason } };
     case "lane.saved":
       return { ...lane, saved: event.report };
+    case "lane.usage":
+      return {
+        ...lane,
+        usage: {
+          inputTokens: lane.usage.inputTokens + event.usage.inputTokens,
+          outputTokens: lane.usage.outputTokens + event.usage.outputTokens,
+        },
+      };
     default:
       return lane;
   }
@@ -75,13 +83,18 @@ export function useRun(): UseRun {
   const [streamError, setStreamError] = useState<string | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const closeRef = useRef<(() => void) | null>(null);
-  const [watching, setWatching] = useState<string | null>(null);
+  // { runId, generation } rather than a bare string: calling watch() again for
+  // the *same* run id (e.g. reconnecting after a regression re-check flips a
+  // finished run's lane back to "running") must still force a fresh SSE
+  // connection, and React would otherwise collapse an identical string value
+  // back to itself with no observable change for the effect to react to.
+  const [watching, setWatching] = useState<{ runId: string; generation: number } | null>(null);
 
   const watch = useCallback((runId: string, seed?: RunState) => {
     setStreamError(null);
     setRunError(null);
     if (seed) dispatch({ type: "run.snapshot", run: seed });
-    setWatching(runId);
+    setWatching((prev) => ({ runId, generation: (prev?.runId === runId ? prev.generation : 0) + 1 }));
   }, []);
 
   const reset = useCallback(() => {
@@ -95,7 +108,7 @@ export function useRun(): UseRun {
   useEffect(() => {
     if (!watching) return;
 
-    const close = streamRun(watching, {
+    const close = streamRun(watching.runId, {
       onEvent: (event) => {
         if (event.type === "error") setRunError(event.message);
         dispatch(event);

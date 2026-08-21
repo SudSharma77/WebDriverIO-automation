@@ -1,74 +1,166 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ApiError, cancelRun, createRun, fetchCapabilities, type CreateRunBody } from "./api";
+import {
+  ApiError,
+  cancelRun,
+  createBatch,
+  createRun,
+  extendRun,
+  fetchCapabilities,
+  fetchRun,
+  reverifyLane,
+  type CreateBatchBody,
+  type CreateRunBody,
+} from "./api";
+import { BatchResults } from "./components/BatchResults";
+import { BatchUpload } from "./components/BatchUpload";
 import { Composer } from "./components/Composer";
+import { History } from "./components/History";
 import { LaneCard } from "./components/LaneCard";
 import { Lightbox } from "./components/Lightbox";
-import type { ServerCapabilities } from "./types";
+import type { LaneStatus, ServerCapabilities } from "./types";
 import { useRun } from "./useRun";
 
 type Theme = "dark" | "light";
+type Mode = "single" | "bulk";
 
-/**
- * Prompt in, verified test out.
- *
- * One primary action on the screen — describe a test case and run it — with
- * everything the run produced arranged in the order the user cares about:
- * did it pass, what did it write, and only then how it got there.
- */
 export default function App() {
   const [capabilities, setCapabilities] = useState<ServerCapabilities | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
-  const [submitError, setSubmitError] = useState<string | null>(null);
   const [issues, setIssues] = useState<Array<{ path: string; message: string }>>([]);
-  const [starting, setStarting] = useState(false);
-  const [zoomed, setZoomed] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [zoom, setZoom] = useState<string | null>(null);
+  const [theme, setTheme] = useState<Theme>(() =>
+    document.documentElement.dataset.theme === "light" ? "light" : "dark",
+  );
 
-  const { run, streamError, runError, watch, reset } = useRun();
+  const { run, streamError, runError, watch } = useRun();
+  const [historyRefresh, setHistoryRefresh] = useState(0);
+  const [mode, setMode] = useState<Mode>("single");
+  const [batchId, setBatchId] = useState<string | null>(null);
+  const [batchSubmitting, setBatchSubmitting] = useState(false);
 
-  const [theme, setTheme] = useState<Theme>("dark");
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  // Refresh the history list once a run actually finishes, so it shows up
+  // without the user needing to reload the page.
+  useEffect(() => {
+    if (run?.finishedAt) setHistoryRefresh((n) => n + 1);
+  }, [run?.finishedAt]);
+
+  const openHistoryRun = useCallback(
+    async (id: string) => {
+      try {
+        const loaded = await fetchRun(id);
+        watch(id, loaded);
+      } catch {
+        setSubmitError("Could not load that run — it may have been evicted from history.");
+      }
+    },
+    [watch],
+  );
+
+  const reverify = useCallback(
+    async (platform: Parameters<typeof reverifyLane>[1]) => {
+      if (!run) return;
+      try {
+        await reverifyLane(run.id, platform);
+        // Force a fresh SSE connection: the original stream closed when this
+        // run first finished, and the lane is about to flip back to "running".
+        watch(run.id);
+      } catch (err) {
+        setSubmitError(err instanceof Error ? err.message : "Could not start the regression check.");
+      }
+    },
+    [run, watch],
+  );
 
   useEffect(() => {
     fetchCapabilities()
       .then(setCapabilities)
       .catch(() =>
-        setBootError("Cannot reach the backend. Start it with `npm run dev:server`, then reload this page."),
+        setBootError(
+          "Cannot reach the backend. Start it with `npm run dev:server` (or `npm run dev` for both).",
+        ),
       );
   }, []);
 
-  const running = useMemo(() => {
-    if (!run || run.finishedAt) return false;
-    return Object.values(run.lanes).some((lane) => lane.status === "running" || lane.status === "queued");
+  const live = useMemo(() => {
+    if (!run) return false;
+    if (run.finishedAt) return false;
+    return Object.values(run.lanes).some((lane) => lane.status === "queued" || lane.status === "running");
   }, [run]);
 
   const submit = useCallback(
     async (body: CreateRunBody) => {
-      setStarting(true);
-      setSubmitError(null);
+      setSubmitting(true);
       setIssues([]);
-      reset();
-
+      setSubmitError(null);
       try {
-        const { id, run: seed } = await createRun(body);
-        watch(id, seed);
+        const { id, run: created } = await createRun(body);
+        watch(id, created);
       } catch (err) {
         if (err instanceof ApiError) {
-          setSubmitError(err.message);
           setIssues(err.issues);
+          setSubmitError(err.message);
         } else {
           setSubmitError(err instanceof Error ? err.message : "Could not start the run.");
         }
       } finally {
-        setStarting(false);
+        setSubmitting(false);
       }
     },
-    [reset, watch],
+    [watch],
   );
 
-  const stop = useCallback(() => {
-    if (run) void cancelRun(run.id);
+  const submitBatch = useCallback(async (body: CreateBatchBody) => {
+    setBatchSubmitting(true);
+    setIssues([]);
+    setSubmitError(null);
+    try {
+      const { id } = await createBatch(body);
+      setBatchId(id);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setIssues(err.issues);
+        setSubmitError(err.message);
+      } else {
+        setSubmitError(err instanceof Error ? err.message : "Could not start the batch.");
+      }
+    } finally {
+      setBatchSubmitting(false);
+    }
+  }, []);
+
+  const extend = useCallback(
+    async (platform: Parameters<typeof extendRun>[1], additionalPrompt: string) => {
+      if (!run) return;
+      setSubmitError(null);
+      try {
+        const { id, run: created } = await extendRun(run.id, platform, additionalPrompt);
+        watch(id, created);
+      } catch (err) {
+        setSubmitError(err instanceof Error ? err.message : "Could not start the extension.");
+      }
+    },
+    [run, watch],
+  );
+
+  const openBatchRun = useCallback(
+    (id: string) => {
+      setMode("single");
+      void openHistoryRun(id);
+    },
+    [openHistoryRun],
+  );
+
+  const summary = useMemo(() => {
+    if (!run) return null;
+    const statuses = run.order.map((p) => run.lanes[p]?.status ?? "queued");
+    const count = (s: LaneStatus) => statuses.filter((x) => x === s).length;
+    return { passed: count("passed"), failed: count("failed") + count("error"), skipped: count("skipped") };
   }, [run]);
 
   return (
@@ -80,44 +172,66 @@ export default function App() {
           </span>
           <span>
             Test Lab
-            <span className="brand__sub"> · describe a test, get a verified one</span>
+            <span className="brand__sub"> · prompt to verified WebdriverIO spec</span>
           </span>
         </div>
         <div className="topbar__spacer" />
-        {run && (
-          <code className="topbar__path" title={`Suite: clients/${run.clientId}`}>
-            clients/{run.clientId}
-          </code>
-        )}
         <button
           className="btn btn--ghost"
           type="button"
-          onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+          onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
           aria-pressed={theme === "light"}
         >
-          {theme === "dark" ? "Light" : "Dark"}
+          {theme === "dark" ? "Light" : "Dark"} theme
         </button>
       </header>
 
       <div className="layout">
-        <aside>
-          <Composer
-            capabilities={capabilities}
-            busy={starting || running}
-            issues={issues}
-            onSubmit={submit}
-            onCancel={stop}
-            canCancel={running}
-          />
-        </aside>
+        <div className="sidebar">
+          <div className="mode-toggle" role="tablist" aria-label="Single or bulk">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === "single"}
+              className="mode-toggle__btn"
+              onClick={() => setMode("single")}
+            >
+              Single test
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === "bulk"}
+              className="mode-toggle__btn"
+              onClick={() => setMode("bulk")}
+            >
+              Bulk upload
+            </button>
+          </div>
 
-        <main className="stage" aria-live="polite">
+          {mode === "single" ? (
+            <Composer
+              capabilities={capabilities}
+              busy={submitting || live}
+              issues={issues}
+              onSubmit={submit}
+              onCancel={() => run && void cancelRun(run.id)}
+              canCancel={live}
+            />
+          ) : (
+            <BatchUpload busy={batchSubmitting} issues={issues} onSubmit={submitBatch} />
+          )}
+
+          <History activeId={run?.id ?? null} refreshKey={historyRefresh} onSelect={openHistoryRun} />
+        </div>
+
+        <main className="stage">
           {bootError && (
             <p className="banner" data-tone="error" role="alert">
               {bootError}
             </p>
           )}
-          {submitError && (
+          {submitError && !issues.length && (
             <p className="banner" data-tone="error" role="alert">
               {submitError}
             </p>
@@ -132,17 +246,52 @@ export default function App() {
               {streamError}
             </p>
           )}
+          {capabilities && !capabilities.iosAvailable && (
+            <p className="banner" data-tone="warn">
+              iOS is unavailable: XCUITest needs macOS with Xcode, and this server runs on {capabilities.host}. Set
+              CLOUD_PROVIDER and its credentials in .env to enable the iOS lane.
+            </p>
+          )}
 
-          {!run ? (
-            <Welcome capabilities={capabilities} />
+          {mode === "bulk" && batchId ? (
+            <BatchResults batchId={batchId} onOpenRun={openBatchRun} />
+          ) : !run ? (
+            <div className="stage-empty">
+              <div className="stage-empty__mark" aria-hidden="true">
+                ◍ ▲ ▮
+              </div>
+              <h2>{mode === "bulk" ? "Upload test cases to begin" : "Describe a test case to begin"}</h2>
+              <p>
+                {mode === "bulk"
+                  ? "Each line becomes its own run through the exact same pipeline — explored, written, and verified cold, one at a time."
+                  : "The agent opens a real browser and device, works through your scenario, writes a WebdriverIO spec from what it actually saw, then replays that spec in a fresh session to prove it holds up."}
+              </p>
+            </div>
           ) : (
             <>
-              <RunSummary run={run} running={running} />
+              <div className="run-header">
+                <h2>{run.prompt}</h2>
+                <span className="run-header__id">{run.id.slice(0, 8)}</span>
+                {summary && !live && (
+                  <span className="run-header__id" role="status">
+                    {summary.passed} passed · {summary.failed} failed
+                    {summary.skipped ? ` · ${summary.skipped} skipped` : ""}
+                  </span>
+                )}
+              </div>
+
               <div className="lanes">
                 {run.order.map((platform) => {
                   const lane = run.lanes[platform];
                   return lane ? (
-                    <LaneCard key={platform} runId={run.id} lane={lane} onZoom={setZoomed} />
+                    <LaneCard
+                      key={platform}
+                      runId={run.id}
+                      lane={lane}
+                      onZoom={setZoom}
+                      onReverify={reverify}
+                      onExtend={extend}
+                    />
                   ) : null;
                 })}
               </div>
@@ -151,55 +300,7 @@ export default function App() {
         </main>
       </div>
 
-      {zoomed && <Lightbox src={zoomed} onClose={() => setZoomed(null)} />}
-    </div>
-  );
-}
-
-function RunSummary({ run, running }: { run: NonNullable<ReturnType<typeof useRun>["run"]>; running: boolean }) {
-  const lanes = run.order.map((platform) => run.lanes[platform]).filter(Boolean);
-  const passed = lanes.filter((lane) => lane!.status === "passed").length;
-  const done = lanes.filter((lane) => ["passed", "failed", "error", "skipped"].includes(lane!.status)).length;
-
-  return (
-    <section className="runsummary">
-      <p className="runsummary__prompt">{run.prompt}</p>
-      <div className="runsummary__facts">
-        <span>{run.target.webUrl ?? run.target.androidApp ?? run.target.iosApp ?? "no target"}</span>
-        {run.secretNames.length > 0 && (
-          <span title="Names only — values are never sent back to this page">
-            {run.secretNames.join(", ")}
-          </span>
-        )}
-        <span>
-          {running ? `${done} of ${lanes.length} finished` : `${passed} of ${lanes.length} passed`}
-        </span>
-      </div>
-    </section>
-  );
-}
-
-function Welcome({ capabilities }: { capabilities: ServerCapabilities | null }) {
-  return (
-    <div className="stage-empty">
-      <div className="stage-empty__mark" aria-hidden="true">
-        ⌘
-      </div>
-      <h2>Describe a test case</h2>
-      <p>
-        It opens your app for real, works through the scenario, writes a WebdriverIO spec from what it actually saw,
-        then replays that spec on a cold session to prove it passes.
-      </p>
-      <p>
-        Everything verified is saved into the client&rsquo;s suite — specs, page objects and locators — so the next run
-        reuses them instead of starting over.
-      </p>
-      {capabilities && (
-        <p className="stage-empty__meta">
-          {capabilities.llm.model} on {capabilities.llm.provider}
-          {!capabilities.iosAvailable && " · iOS needs a cloud device farm"}
-        </p>
-      )}
+      {zoom && <Lightbox src={zoom} onClose={() => setZoom(null)} />}
     </div>
   );
 }

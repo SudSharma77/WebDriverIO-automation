@@ -72,12 +72,13 @@ export async function planFromPrompt(
 
 async function ask(turns: Array<{ role: "user" | "assistant"; text: string }>): Promise<string> {
   try {
-    return await llm.complete({
+    const { text } = await llm.complete({
       system: PLANNER_SYSTEM,
       turns,
       maxTokens: config.PLANNER_MAX_OUTPUT_TOKENS,
       json: true,
     });
+    return text;
   } catch (err) {
     throw new Error(llm.describeError(err));
   }

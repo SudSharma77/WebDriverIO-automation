@@ -37,6 +37,12 @@ export interface Screenshot {
 /** How much work a request needed. Ordered cheapest first. */
 export type ReuseMode = "replayed" | "repaired" | "from-catalog" | "explored";
 
+/** Just the two numbers every provider's billing actually keys off. */
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface SaveSummary {
   specFile: string;
   pages: Array<{
@@ -60,11 +66,15 @@ export interface LaneState {
   screenshots: Screenshot[];
   recordedCode?: string;
   specCode?: string;
+  /** The spec code as it was just before the most recent overwrite - powers the repair diff view. */
+  previousSpecCode?: string;
   specPath?: string;
   verifyLog: string[];
   startedAt?: number;
   finishedAt?: number;
   toolCallCount: number;
+  /** Running total across every LLM call this lane has made so far. */
+  usage: TokenUsage;
   /** Client-side only: the agent's running narration. */
   narration?: string[];
   reuse?: { mode: ReuseMode; reason: string };
@@ -85,12 +95,52 @@ export interface RunState {
   prompt: string;
   target: RunTarget;
   headless: boolean;
+  stabilityRuns: number;
   createdAt: number;
   finishedAt?: number;
   lanes: Record<string, LaneState>;
   order: Platform[];
   /** Names only — the server never sends credential values to the browser. */
   secretNames: string[];
+}
+
+/** Summary row for the run-history list — GET /api/runs. */
+export interface RunSummary {
+  id: string;
+  prompt: string;
+  createdAt: number;
+  finishedAt?: number;
+  platforms: Platform[];
+  statuses: Record<string, LaneStatus>;
+  /** Only present from GET /api/batches/:id — a plain-English failure cause per platform, when failed. */
+  details?: Record<string, string | undefined>;
+}
+
+/** One row of a bulk upload: its own scenario and target. */
+export interface BatchCase {
+  prompt: string;
+  target: RunTarget;
+}
+
+export interface BatchState {
+  id: string;
+  createdAt: number;
+  finishedAt?: number;
+  platforms: Platform[];
+  headless: boolean;
+  stabilityRuns: number;
+  runIds: string[];
+  caseCount: number;
+}
+
+/** Summary row for the batch-history list — GET /api/batches. */
+export interface BatchSummary {
+  id: string;
+  createdAt: number;
+  finishedAt?: number;
+  platforms: Platform[];
+  caseCount: number;
+  completed: number;
 }
 
 export type RunEvent =
@@ -105,6 +155,8 @@ export type RunEvent =
   | { type: "verify.log"; platform: Platform; line: string }
   | { type: "lane.reuse"; platform: Platform; mode: ReuseMode; reason: string }
   | { type: "lane.saved"; platform: Platform; report: SaveSummary }
+  /** A delta to add to the lane's running total, not the total itself. */
+  | { type: "lane.usage"; platform: Platform; usage: TokenUsage }
   | { type: "run.done"; runId: string }
   | { type: "error"; platform?: Platform; message: string };
 

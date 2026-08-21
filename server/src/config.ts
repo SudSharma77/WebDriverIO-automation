@@ -14,6 +14,8 @@ const Env = z.object({
   LLM_PROVIDER: z.enum(["anthropic", "groq", "openai", "ollama", "custom"]).default("anthropic"),
   LLM_API_KEY: z.string().optional(),
   LLM_MODEL: z.string().optional(),
+  /** Tried once, automatically, if LLM_MODEL gets rate-limited during synthesis/repair. */
+  LLM_FALLBACK_MODEL: z.string().optional(),
   LLM_BASE_URL: z.string().url().optional(),
   LLM_SUPPORTS_VISION: z.enum(["auto", "true", "false"]).default("auto"),
   LLM_MAX_RETRIES: z.coerce.number().int().min(0).max(10).default(4),
@@ -152,6 +154,8 @@ function resolveLlm() {
     sendScreenshots,
     leanTools,
     maxRetries: env.LLM_MAX_RETRIES,
+    // Same provider and key, just a different (usually lighter/higher-quota) model id.
+    fallbackModel: env.LLM_FALLBACK_MODEL ?? null,
   };
 }
 

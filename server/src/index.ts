@@ -1,10 +1,13 @@
 import cors from "@fastify/cors";
 import Fastify from "fastify";
 import fs from "node:fs/promises";
+import { batchStore } from "./batch.js";
 import { config } from "./config.js";
 import { cancelAll } from "./orchestrator.js";
+import { registerBatchRoutes } from "./routes/batches.js";
 import { registerFrameworkRoutes } from "./routes/framework.js";
 import { registerRunRoutes } from "./routes/runs.js";
+import { store } from "./store.js";
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL ?? "info" },
@@ -27,8 +30,11 @@ app.log.info(`starting on port ${config.PORT} (cwd ${process.cwd()})`);
 
 await registerFrameworkRoutes(app);
 await registerRunRoutes(app);
+await registerBatchRoutes(app);
 
 await fs.mkdir(config.artifactDir, { recursive: true });
+await store.hydrate();
+await batchStore.hydrate();
 
 try {
   await app.listen({ port: config.PORT, host: "127.0.0.1" });

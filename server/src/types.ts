@@ -70,6 +70,14 @@ export interface CreateRunInput {
    * run id, and reach the device through placeholder substitution.
    */
   secrets?: Record<string, string>;
+  /** Extra cold `wdio run` repeats after the first pass, to catch flaky specs. */
+  stabilityRuns?: number;
+}
+
+/** Just the two numbers every provider's billing actually keys off - deliberately not coupled to the LLM adapter's own copy of this shape. */
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
 }
 
 export interface LaneState {
@@ -82,6 +90,7 @@ export interface LaneState {
   screenshots: Screenshot[];
   recordedCode?: string;
   specCode?: string;
+  previousSpecCode?: string;
   specPath?: string;
   verifyLog: string[];
   startedAt?: number;
@@ -91,6 +100,8 @@ export interface LaneState {
   reuse?: { mode: ReuseMode; reason: string };
   /** What this lane contributed to the client's project. */
   saved?: SaveSummary;
+  /** Running total across every LLM call this lane has made so far - explore, structure, code, lint-fix, repair, failure summary. */
+  usage: TokenUsage;
 }
 
 export interface AgentStep {
@@ -116,12 +127,38 @@ export interface RunState {
   prompt: string;
   target: RunTarget;
   headless: boolean;
+  stabilityRuns: number;
   createdAt: number;
   finishedAt?: number;
   lanes: Record<string, LaneState>;
   order: Platform[];
   /** Secret NAMES only — never values. Lets the UI show what was injected. */
   secretNames: string[];
+}
+
+/** One row of a bulk upload: its own scenario and target, sharing the batch's platform/headless/stability settings. */
+export interface BatchCase {
+  prompt: string;
+  target: RunTarget;
+}
+
+/**
+ * A batch is a thin ordered pointer to real runs, not a parallel execution
+ * model. Cases run one at a time through the exact same pipeline a single
+ * submission uses — sequential on purpose, since three lanes already contend
+ * for one rate-limited key; N cases run in parallel would multiply that.
+ */
+export interface BatchState {
+  id: string;
+  createdAt: number;
+  finishedAt?: number;
+  platforms: Platform[];
+  headless: boolean;
+  stabilityRuns: number;
+  /** Populated as each case starts - the last id is still running until finishedAt is set. */
+  runIds: string[];
+  /** Total cases requested, known immediately even before every run has been created. */
+  caseCount: number;
 }
 
 export type RunEvent =
@@ -138,5 +175,7 @@ export type RunEvent =
   | { type: "lane.reuse"; platform: Platform; mode: ReuseMode; reason: string }
   /** What the run added to the client's project. */
   | { type: "lane.saved"; platform: Platform; report: SaveSummary }
+  /** A delta to add to the lane's running total, not the total itself - emitted once per LLM call site (explore, structure, code, repair, ...). */
+  | { type: "lane.usage"; platform: Platform; usage: TokenUsage }
   | { type: "run.done"; runId: string }
   | { type: "error"; platform?: Platform; message: string };
