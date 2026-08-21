@@ -1,0 +1,9 @@
+id,username,email,password,firstName,lastName,age,country,city,phone,role,isActive
+1,csvuser1,csvuser1@example.com,CsvPass123!,Alice,Green,27,USA,Los Angeles,+1-555-0201,user,true
+2,csvuser2,csvuser2@example.com,CsvPass456!,Bob,White,32,Canada,Vancouver,+1-555-0202,admin,true
+3,csvuser3,csvuser3@example.com,CsvPass789!,Charlie,Black,29,UK,Manchester,+44-555-0203,moderator,false
+4,csvuser4,csvuser4@example.com,CsvPass999!,Diana,Gray,24,Australia,Melbourne,+61-555-0204,user,true
+5,csvuser5,csvuser5@example.com,CsvPass111!,Eve,Blue,38,Germany,Munich,+49-555-0205,admin,true
+6,csvuser6,csvuser6@example.com,CsvPass222!,Frank,Red,33,France,Paris,+33-555-0206,user,false
+7,csvuser7,csvuser7@example.com,CsvPass333!,Grace,Yellow,26,Italy,Rome,+39-555-0207,moderator,true
+8,csvuser8,csvuser8@example.com,CsvPass444!,Henry,Purple,31,Spain,Madrid,+34-555-0208,user,true

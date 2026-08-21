@@ -1,0 +1,40 @@
+{
+  "compilerOptions": {
+    "target": "ES2019",
+    "module": "CommonJS",
+    "lib": ["ES2019", "DOM"],
+    "outDir": "./dist",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "removeComments": true,
+    "resolveJsonModule": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "types": ["mocha", "node", "@wdio/globals/types"],
+    "baseUrl": ".",
+    "paths": {
+      "@pages/*": ["src/pageObjects/*"],
+      "@utilities/*": ["src/utilities/*"],
+      "@fixtures/*": ["src/fixtures/*"],
+      "@api/*": ["src/api/*"]
+    }
+  },
+  "include": [
+    "src/**/*",
+    "test/**/*",
+    "config/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "allure-results",
+    "allure-report",
+    "screenshots",
+    "coverage"
+  ]
+}

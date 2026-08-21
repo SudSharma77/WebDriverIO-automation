@@ -1,0 +1,97 @@
+[
+    {
+        "id": 1,
+        "username": "testuser1",
+        "email": "testuser1@example.com",
+        "password": "TestPass123!",
+        "firstName": "John",
+        "lastName": "Doe",
+        "age": 30,
+        "country": "USA",
+        "city": "New York",
+        "phone": "+1-555-0101",
+        "role": "admin",
+        "isActive": true,
+        "preferences": {
+            "theme": "dark",
+            "language": "en",
+            "notifications": true
+        }
+    },
+    {
+        "id": 2,
+        "username": "testuser2",
+        "email": "testuser2@example.com",
+        "password": "TestPass456!",
+        "firstName": "Jane",
+        "lastName": "Smith",
+        "age": 25,
+        "country": "Canada",
+        "city": "Toronto",
+        "phone": "+1-555-0102",
+        "role": "user",
+        "isActive": true,
+        "preferences": {
+            "theme": "light",
+            "language": "en",
+            "notifications": false
+        }
+    },
+    {
+        "id": 3,
+        "username": "testuser3",
+        "email": "testuser3@example.com",
+        "password": "TestPass789!",
+        "firstName": "Mike",
+        "lastName": "Johnson",
+        "age": 35,
+        "country": "UK",
+        "city": "London",
+        "phone": "+44-555-0103",
+        "role": "moderator",
+        "isActive": false,
+        "preferences": {
+            "theme": "dark",
+            "language": "en",
+            "notifications": true
+        }
+    },
+    {
+        "id": 4,
+        "username": "testuser4",
+        "email": "testuser4@example.com",
+        "password": "TestPass999!",
+        "firstName": "Sarah",
+        "lastName": "Wilson",
+        "age": 28,
+        "country": "Australia",
+        "city": "Sydney",
+        "phone": "+61-555-0104",
+        "role": "user",
+        "isActive": true,
+        "preferences": {
+            "theme": "light",
+            "language": "en",
+            "notifications": true
+        }
+    },
+    {
+        "id": 5,
+        "username": "testuser5",
+        "email": "testuser5@example.com",
+        "password": "TestPass111!",
+        "firstName": "David",
+        "lastName": "Brown",
+        "age": 42,
+        "country": "Germany",
+        "city": "Berlin",
+        "phone": "+49-555-0105",
+        "role": "admin",
+        "isActive": true,
+        "preferences": {
+            "theme": "dark",
+            "language": "de",
+            "notifications": false
+        }
+    }
+]

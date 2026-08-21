@@ -1,0 +1,33 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run Web Tests",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"test:web"
+			],
+			"group": "test",
+			"isBackground": false,
+			"problemMatcher": [
+				"$tsc"
+			]
+		},
+		{
+			"label": "Run Multiremote Tests",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"test:multiremote"
+			],
+			"group": "test",
+			"isBackground": false,
+			"problemMatcher": [
+				"$tsc"
+			]
+		}
+	]
+}

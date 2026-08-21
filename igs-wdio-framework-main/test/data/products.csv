@@ -1,0 +1,7 @@
+productId,name,category,price,currency,inStock,quantity,description
+PROD101,Gaming Mouse,Accessories,79.99,USD,true,75,High-precision gaming mouse with RGB lighting
+PROD102,Mechanical Keyboard,Accessories,149.99,USD,true,25,Mechanical keyboard with blue switches
+PROD103,4K Monitor,Displays,399.99,USD,false,0,27-inch 4K monitor with HDR support
+PROD104,USB-C Hub,Accessories,59.99,USD,true,150,Multi-port USB-C hub with HDMI and Ethernet
+PROD105,Webcam HD,Accessories,89.99,USD,true,60,1080p webcam with auto-focus
+PROD106,Tablet 10inch,Electronics,249.99,USD,true,30,10-inch tablet with stylus support

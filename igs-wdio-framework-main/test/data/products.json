@@ -1,0 +1,53 @@
+[
+    {
+        "productId": "PROD001",
+        "name": "Laptop Pro 15",
+        "category": "Electronics",
+        "price": 1299.99,
+        "currency": "USD",
+        "inStock": true,
+        "quantity": 50,
+        "description": "High-performance laptop with 15-inch display",
+        "specifications": {
+            "screen": "15.6 inch",
+            "processor": "Intel i7",
+            "ram": "16GB",
+            "storage": "512GB SSD"
+        },
+        "tags": ["laptop", "electronics", "productivity"]
+    },
+    {
+        "productId": "PROD002",
+        "name": "Wireless Headphones",
+        "category": "Audio",
+        "price": 199.99,
+        "currency": "USD",
+        "inStock": true,
+        "quantity": 100,
+        "description": "Premium wireless headphones with noise cancellation",
+        "specifications": {
+            "type": "Over-ear",
+            "connectivity": "Bluetooth 5.0",
+            "battery": "30 hours",
+            "noiseCancel": true
+        },
+        "tags": ["headphones", "audio", "wireless"]
+    },
+    {
+        "productId": "PROD003",
+        "name": "Smart Watch",
+        "category": "Wearables",
+        "price": 299.99,
+        "currency": "USD",
+        "inStock": false,
+        "quantity": 0,
+        "description": "Advanced smartwatch with health tracking",
+        "specifications": {
+            "display": "1.4 inch OLED",
+            "battery": "7 days",
+            "waterproof": "50m",
+            "sensors": ["heart rate", "GPS", "accelerometer"]
+        },
+        "tags": ["smartwatch", "fitness", "health"]
+    }
+]
