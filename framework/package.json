@@ -5,10 +5,14 @@
   "type": "module",
   "description": "The WebdriverIO runtime that generated specs are written against: resilient interactions, readable failures, and per-platform config factories.",
   "exports": {
-    ".": "./runtime/index.mjs",
+    ".": "./runtime/index.ts",
     "./config": "./config/index.mjs"
   },
-  "//": "Authored as plain ESM rather than TypeScript on purpose. Generated specs are JavaScript executed by `wdio run` with no ts-node in the chain, so a compile step between writing a spec and replaying it would be a build failure mode sitting in the middle of the verification path. Types ship as hand-written .d.ts alongside.",
+  "//": "Still no build step, which was always the real constraint: nothing may have to compile between generating a spec and replaying it. WebdriverIO v9 satisfies that directly — @wdio/cli depends on tsx and injects it into NODE_OPTIONS for every worker, so a .ts spec runs as-is. The two entry points differ on purpose. The runtime is TypeScript because only specs import it, and specs always run in a worker where tsx is registered. The config stays plain ESM because the *launcher* imports it, and the launcher registers tsx for itself only when the config file it was handed is TypeScript — a client project generated before this change still has a wdio.*.config.mjs, and a .ts module here would break it with ERR_UNKNOWN_FILE_EXTENSION on any Node without type stripping. Config types therefore live in config/index.d.ts, pinned against the implementation by contract.test.ts.",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "tsx --test contract.test.ts"
+  },
   "files": [
     "runtime",
     "config"

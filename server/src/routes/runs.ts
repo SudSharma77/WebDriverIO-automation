@@ -10,29 +10,15 @@ import { cancelRun, startExtend, startRun } from "../orchestrator.js";
 import { verify } from "../runner/verify.js";
 import { store } from "../store.js";
 import { PLATFORMS, isPlatform, type RunEvent } from "../types.js";
-
-/**
- * Secret names are constrained to env-var shape because that is literally what
- * they become in the runner's environment, and the value cap keeps a pasted
- * certificate or token dump from ending up held in memory for the run.
- */
-const SecretName = z
-  .string()
-  .regex(/^[A-Z][A-Z0-9_]{0,63}$/, "Secret names must be A–Z, 0–9 and _, starting with a letter.");
+import { ClientId, Secrets } from "./shared.js";
 
 const CreateRun = z
   .object({
     prompt: z.string().trim().min(10, "Describe the test case in a sentence or two.").max(4000),
     platforms: z.array(z.enum(PLATFORMS)).min(1, "Pick at least one platform."),
     headless: z.boolean().default(false),
-    // Path segment on disk, so anything that could climb out of the artifact
-    // tree is rejected outright rather than sanitised.
-    clientId: z
-      .string()
-      .trim()
-      .regex(/^[a-z0-9][a-z0-9-]{0,62}$/, "Client id must be lowercase letters, digits and hyphens.")
-      .default("default"),
-    secrets: z.record(SecretName, z.string().max(4096)).default({}),
+    clientId: ClientId,
+    secrets: Secrets,
     // Extra cold repeats after a pass, to catch flaky specs before handing them off.
     stabilityRuns: z.coerce.number().int().min(0).max(5).default(0),
     target: z

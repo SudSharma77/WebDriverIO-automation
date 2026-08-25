@@ -86,6 +86,13 @@ export interface LlmProvider {
     maxTokens: number;
     /** Suppresses image blocks even on a vision model, to save tokens. */
     sendImages: boolean;
+    /**
+     * Hard ceiling on estimated tokens per request, counting prompt + reserved
+     * output. Oldest history is dropped to stay under it. Zero disables the
+     * trimming entirely, which is right for any provider whose context window
+     * comfortably exceeds a full explore session.
+     */
+    requestBudgetTokens?: number;
   }): LlmConversation;
 
   /**

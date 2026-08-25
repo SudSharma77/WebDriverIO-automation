@@ -37,6 +37,17 @@ export interface ElementFact {
   property: string;
   selector: string;
   interactions: Interaction[];
+  /**
+   * This element holds a credential, so anything typed into it must be kept
+   * out of WebdriverIO's own command log.
+   *
+   * A property of the element, not of one call: a password field is a password
+   * field every time it is touched. That is what lets the generated method
+   * carry the flag itself, which in turn is what lets a masked field become a
+   * page-object call instead of staying a raw selector in the spec forever
+   * (see `pom.ts`).
+   */
+  masked?: boolean;
 }
 
 export interface PageFact {
@@ -50,7 +61,12 @@ export interface PageFact {
   elements: ElementFact[];
 }
 
-const HELPER_INTERACTION: Record<string, Interaction> = {
+/**
+ * Exported so the page-object rewrite (`pom.ts`) recognises exactly the same
+ * call shapes this scanner does — the two must never drift, or the rewrite
+ * could leave behind a raw call this file would have tracked, or vice versa.
+ */
+export const HELPER_INTERACTION: Record<string, Interaction> = {
   click: "click",
   type: "type",
   getText: "read",
@@ -73,7 +89,7 @@ export function partitionByPage(spec: string, platform: Platform, fallbackName: 
 
   for (const event of scan(spec)) {
     if (event.kind === "navigate") {
-      const slug = slugFromUrl(event.url) ?? slugify(fallbackName);
+      const slug = (event.url ? slugFromUrl(event.url) : event.slug) ?? slugify(fallbackName);
       current = findOrCreate(pages, slug, platform, event.url);
       continue;
     }
@@ -88,6 +104,10 @@ export function partitionByPage(spec: string, platform: Platform, fallbackName: 
     const existing = current.elements.find((e) => e.label === event.label);
     if (existing) {
       if (!existing.interactions.includes(event.interaction)) existing.interactions.push(event.interaction);
+      // Sticky: one masked call is enough to establish that this element holds
+      // a credential. A later unmasked call on the same field is a mistake to
+      // absorb, not a reason to start logging the value.
+      if (event.masked) existing.masked = true;
       continue;
     }
 
@@ -96,6 +116,7 @@ export function partitionByPage(spec: string, platform: Platform, fallbackName: 
       property,
       selector: event.selector,
       interactions: [event.interaction],
+      ...(event.masked ? { masked: true } : {}),
     });
   }
 
@@ -113,8 +134,8 @@ function findOrCreate(pages: PageFact[], slug: string, platform: Platform, url: 
 }
 
 type ScanEvent =
-  | { kind: "navigate"; url: string }
-  | { kind: "element"; label: string; selector: string; interaction: Interaction };
+  | { kind: "navigate"; url?: string; slug?: string }
+  | { kind: "element"; label: string; selector: string; interaction: Interaction; masked: boolean };
 
 /**
  * Walk the spec in source order.
@@ -125,7 +146,16 @@ type ScanEvent =
  */
 function* scan(source: string): Generator<ScanEvent> {
   const pattern = new RegExp(
-    ["browser\\.url\\(\\s*(['\"`])([^'\"`]+)\\1", `\\b(${Object.keys(HELPER_INTERACTION).join("|")})\\s*\\(`].join("|"),
+    [
+      "browser\\.url\\(\\s*(['\"`])([^'\"`]+)\\1",
+      // A spec that has already been through the page-object rewrite navigates
+      // via `homePage.open()` instead — see `rewriteNavigation` in pom.ts.
+      // Without this, re-scanning such a file (which happens every time a
+      // second scenario is nested into it) would see no page boundary at all
+      // and attribute the new scenario's elements to a fallback screen.
+      "\\b(\\w+)\\.open\\(\\s*\\)",
+      `\\b(${Object.keys(HELPER_INTERACTION).join("|")})\\s*\\(`,
+    ].join("|"),
     "g",
   );
 
@@ -135,7 +165,13 @@ function* scan(source: string): Generator<ScanEvent> {
       continue;
     }
 
-    const helper = match[3];
+    if (match[3]) {
+      const slug = slugFromInstance(match[3]);
+      if (slug) yield { kind: "navigate", slug };
+      continue;
+    }
+
+    const helper = match[4];
     if (!helper) continue;
 
     // Guard against `page.click(` and `myClick(` — other people's functions.
@@ -148,12 +184,26 @@ function* scan(source: string): Generator<ScanEvent> {
     const selector = firstStringLiteral(args);
     const label = labelArgument(args);
     if (selector && label) {
-      yield { kind: "element", label, selector, interaction: HELPER_INTERACTION[helper]! };
+      yield {
+        kind: "element",
+        label,
+        selector,
+        interaction: HELPER_INTERACTION[helper]!,
+        masked: MASK_OPTION.test(args),
+      };
     }
   }
 }
 
-function balanced(source: string, open: number): string | null {
+/**
+ * Args (or body) text between a matching pair of parens, given the index of
+ * the opening one. Skips over quoted strings — including backtick templates,
+ * whose `${...}` interpolations could otherwise be mistaken for real nesting
+ * — so a stray paren inside a string literal never throws off the count.
+ * Exported: the same matcher is what makes it safe to find the exact extent
+ * of an existing `describe(...)` call when splicing a new scenario into it.
+ */
+export function balanced(source: string, open: number): string | null {
   let depth = 0;
   let quote: string | null = null;
 
@@ -184,6 +234,14 @@ function firstStringLiteral(args: string): string | null {
 function labelArgument(args: string): string | null {
   return /\blabel\s*:\s*(['"`])((?:[^\\]|\\.)*?)\1/.exec(args)?.[2]?.trim() || null;
 }
+
+/**
+ * `{ mask: true }` in the options bag. Shared with `pom.ts`, which has to
+ * recognise exactly the same shape — the two scanners disagreeing would mean a
+ * spec whose credential the rewrite treats one way and the page object the
+ * other.
+ */
+export const MASK_OPTION = /\bmask\s*:\s*true\b/;
 
 /**
  * `https://shop.example.com/checkout/payment` -> `checkout-payment`
@@ -230,6 +288,19 @@ export function slugify(text: string): string {
       // mid-word and leave a dangling separator, e.g. "…and-conditions-".
       .replace(/^-+|-+$/g, "") || "screen"
   );
+}
+
+/**
+ * `checkoutPaymentPage` -> `checkout-payment`. The inverse of `toClassName`
+ * followed by the instance-name convention, so a rewritten spec's `open()`
+ * call resolves back to the same page this scanner would have created from the
+ * URL. Returns null for anything that isn't a page instance — `foo.open()` on
+ * some unrelated object must not invent a screen.
+ */
+function slugFromInstance(instance: string): string | null {
+  if (!/^[a-z]\w*Page$/.test(instance)) return null;
+  const base = instance.slice(0, -"Page".length);
+  return slugify(base.replace(/([a-z0-9])([A-Z])/g, "$1-$2"));
 }
 
 /** `checkout-payment` -> `CheckoutPaymentPage` */

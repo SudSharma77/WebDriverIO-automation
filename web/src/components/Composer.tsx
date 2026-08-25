@@ -1,6 +1,7 @@
 import { useId, useMemo, useState } from "react";
 import type { CreateRunBody } from "../api";
 import { PLATFORMS, PLATFORM_LABEL, type Platform, type ServerCapabilities } from "../types";
+import { Credentials } from "./Credentials";
 
 interface Props {
   capabilities: ServerCapabilities | null;
@@ -13,18 +14,6 @@ interface Props {
 
 const EXAMPLE =
   "Add the first product on the catalogue page to the cart, open the cart, and confirm it shows exactly one item with the correct name and price.";
-
-/**
- * Pre-fill the name of a new credential row.
- *
- * Almost every login is a username and a password in that order, so filling
- * those in costs nothing and removes the moment of "wait, what do I type here?"
- * — while still being a plain editable value rather than a fixed field.
- */
-function suggestName(existing: Array<{ name: string }>): string {
-  const taken = new Set(existing.map((secret) => secret.name.trim().toUpperCase()));
-  return ["USERNAME", "PASSWORD"].find((name) => !taken.has(name)) ?? "";
-}
 
 export function Composer({ capabilities, busy, issues, onSubmit, onCancel, canCancel }: Props) {
   const ids = {
@@ -84,10 +73,6 @@ export function Composer({ capabilities, busy, issues, onSubmit, onCancel, canCa
         iosDeviceName: iosDeviceName.trim() || undefined,
       },
     });
-  };
-
-  const updateSecret = (index: number, patch: Partial<{ name: string; value: string }>) => {
-    setSecrets((current) => current.map((secret, i) => (i === index ? { ...secret, ...patch } : secret)));
   };
 
   const submit = (event: React.FormEvent) => {
@@ -253,60 +238,13 @@ export function Composer({ capabilities, busy, issues, onSubmit, onCancel, canCa
         </label>
       )}
 
-      <fieldset disabled={busy}>
-        <legend>Credentials</legend>
-        <p className="field__hint" style={{ marginTop: 0 }}>
-          Add one row per value the login needs — usually a username and a password. Values go to the browser under
-          test and nowhere else; the saved spec reads them from the environment, so nothing is written to a file.
-        </p>
-
-        {secrets.length > 0 && (
-          <ul className="secrets">
-            <li className="secrets__row secrets__head" aria-hidden="true">
-              <span>Name</span>
-              <span>Value</span>
-              <span />
-            </li>
-            {secrets.map((secret, index) => (
-              <li className="secrets__row" key={index}>
-                <input
-                  className="input secrets__name"
-                  value={secret.name}
-                  onChange={(e) => updateSecret(index, { name: e.target.value })}
-                  placeholder="USERNAME"
-                  aria-label={`Credential ${index + 1} name`}
-                  spellCheck={false}
-                />
-                <input
-                  className="input"
-                  type="password"
-                  value={secret.value}
-                  onChange={(e) => updateSecret(index, { value: e.target.value })}
-                  placeholder="the value itself"
-                  aria-label={`Credential ${index + 1} value`}
-                  autoComplete="off"
-                />
-                <button
-                  className="btn btn--ghost secrets__remove"
-                  type="button"
-                  onClick={() => setSecrets((current) => current.filter((_, i) => i !== index))}
-                  aria-label={`Remove credential ${secret.name || index + 1}`}
-                >
-                  Remove
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        <button
-          className="btn btn--ghost"
-          type="button"
-          onClick={() => setSecrets((current) => [...current, { name: suggestName(current), value: "" }])}
-        >
-          {secrets.length === 0 ? "Add credential" : "Add another"}
-        </button>
-      </fieldset>
+      <Credentials
+        secrets={secrets}
+        onChange={setSecrets}
+        busy={busy}
+        hint="Add one row per value the login needs — usually a username and a password. Values go to the browser under
+          test and nowhere else; the saved spec reads them from the environment, so nothing is written to a file."
+      />
 
       <div className="field">
         <label className="field__label" htmlFor={ids.client}>

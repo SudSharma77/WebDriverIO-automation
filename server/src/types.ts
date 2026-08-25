@@ -15,10 +15,43 @@ export interface SaveSummary {
     addedElements: string[];
     addedMethods: string[];
     changedLocators: Array<{ property: string; from: string; to: string }>;
+    /** Credential methods on an existing page that predate element-level masking. */
+    unmaskedMethods: string[];
   }>;
   locatorsAdded: string[];
   locatorsChanged: string[];
   reusedExistingSpec: boolean;
+  /** Landed as a new it() inside an already-saved spec, rather than its own file. */
+  addedToExistingSpec: boolean;
+  /** Calls page-object methods rather than raw selectors. */
+  usesPageObjects: boolean;
+  /**
+   * What happened to the business-function layer: flows written, existing ones
+   * reused, or an extraction rolled back because the lifted spec did not
+   * replay. See knowledge/businessFunction.ts.
+   */
+  flow?: {
+    names: string[];
+    applied: boolean;
+    /** Those that already existed; nothing new was written for them. */
+    reused?: string[];
+    /** The lifted spec was replayed and passed. */
+    verified?: boolean;
+    /** New flows that delegate their opening steps to one that already existed. */
+    composedFrom?: Array<{ name: string; steps: number }>;
+    reason?: string;
+  };
+  /**
+   * A run of opening steps this scenario shares with an earlier spec, surfaced
+   * only when nothing was done about it automatically.
+   */
+  flowSuggestion?: { steps: number; sharedWithFile: string; sharedWithTitle: string };
+  /**
+   * Whether this run's changes reached the client's linked repo, if they have
+   * one. `awaitingReview` is the normal outcome: the change is committed
+   * locally and waiting for a person to approve it before it is pushed.
+   */
+  repoSync?: { pushed: boolean; branch: string; error?: string; awaitingReview?: string };
 }
 
 export const PLATFORMS = ["web", "android", "ios"] as const;

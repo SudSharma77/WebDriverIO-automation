@@ -92,6 +92,43 @@ describe("opposed", () => {
   it("does not fire on unrelated prompts", () => {
     assert.ok(!opposed("search for a product", "open the profile page"));
   });
+
+  // Regression: "login with credentials then logout" scored 0.5 similarity
+  // against a login-only spec (2/4 shared words) and was replayed verbatim —
+  // logout was never run, and the result still reported "passed".
+  it("catches a request for more than a candidate covers, not just its opposite", () => {
+    assert.ok(similarity("login with valid credentials then logout", "login with credentials") >= 0.5);
+    assert.ok(opposed("login with valid credentials then logout", "login with credentials"));
+  });
+
+  it("still allows a reworded version of the same broader scenario to match", () => {
+    assert.ok(!opposed("login with valid credentials then logout", "login then logout with valid credentials"));
+  });
+
+  it("does not fire on a word used in an unrelated sense elsewhere in OPPOSITES", () => {
+    // "open" here has nothing to do with the open/close pair — "close" never
+    // appears in either prompt, so the pair was never actually in play.
+    assert.ok(!opposed("search for a product", "open the profile page"));
+  });
+});
+
+describe("synonym phrasing", () => {
+  it("treats 'sign out' as the same scenario as 'logout'", () => {
+    assert.ok(similarity("click sign out from the profile menu", "click logout from the profile menu") >= 0.9);
+  });
+
+  it("treats 'log off' and 'sign out' the same as 'logout' for the opposites gate too", () => {
+    // A spec that only covers login must still be refused for any of the
+    // ways a client might phrase "and then log out".
+    assert.ok(opposed("login with valid credentials then log off", "login with credentials"));
+    assert.ok(opposed("login with valid credentials then sign out", "login with credentials"));
+  });
+
+  it("does not merge 'sign in' phrasing into unrelated words", () => {
+    // Regression guard: the phrase regex must not eat into "assign" or
+    // "design" — only the whole-word "sign in"/"sign out" boundary.
+    assert.ok(!opposed("assign a task to a user", "sign out of the account"));
+  });
 });
 
 const emptyCatalog = (): Catalog => ({ version: 1, clientId: "acme", entries: [] });
@@ -139,6 +176,29 @@ describe("decideReuse", () => {
     });
 
     const decision = decideReuse({ ...base, prompt: "remove a laptop from the cart", specs, catalog: emptyCatalog() });
+    assert.notEqual(decision.mode, "replayed");
+  });
+
+  it("refuses to replay a login-only spec for a login-then-logout request", () => {
+    const specs = emptySpecs();
+    specs.specs.push({
+      file: "login-with-credentials.web.spec.js",
+      prompt: "login with credentials",
+      title: "Login with credentials",
+      platform: "web",
+      target: base.target,
+      createdAt: 1,
+      lastVerified: 1,
+      passCount: 1,
+      requiresSecrets: ["EMAIL", "PASSWORD"],
+    });
+
+    const decision = decideReuse({
+      ...base,
+      prompt: "Login with valid credentials then logout",
+      specs,
+      catalog: emptyCatalog(),
+    });
     assert.notEqual(decision.mode, "replayed");
   });
 

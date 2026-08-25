@@ -29,6 +29,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.10",
+    "@typescript-eslint/parser": "^8.67.0",
     "tsx": "^4.20.3"
   },
   "//": "WebdriverIO runner deps live here so generated specs under ./artifacts resolve them by walking up to ./node_modules. `typescript` is a runtime dependency: the framework indexer parses target projects with the TS compiler API.",

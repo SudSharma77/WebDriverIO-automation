@@ -3,6 +3,7 @@ import { z } from "zod";
 import { batchStore } from "../batch.js";
 import { store } from "../store.js";
 import { PLATFORMS } from "../types.js";
+import { ClientId, Secrets } from "./shared.js";
 
 const CreateBatch = z
   .object({
@@ -26,9 +27,22 @@ const CreateBatch = z
     platforms: z.array(z.enum(PLATFORMS)).min(1, "Pick at least one platform."),
     headless: z.boolean().default(false),
     stabilityRuns: z.coerce.number().int().min(0).max(5).default(0),
+    clientId: ClientId,
+    // One set of credentials for the whole batch, applied to every case — a
+    // bulk upload tests one app across many scenarios, not many apps, so a
+    // per-case login would just be the same values pasted 50 times.
+    secrets: Secrets,
   })
   .refine((v) => !v.platforms.includes("web") || v.cases.every((c) => !!c.target.webUrl), {
     message: "Every case needs a URL when the web lane is selected.",
+    path: ["cases"],
+  })
+  .refine((v) => !v.platforms.includes("android") || v.cases.every((c) => !!c.target.androidApp), {
+    message: "The Android lane needs a path to an .apk on every case.",
+    path: ["cases"],
+  })
+  .refine((v) => !v.platforms.includes("ios") || v.cases.every((c) => !!c.target.iosApp), {
+    message: "The iOS lane needs a cloud app id on every case.",
     path: ["cases"],
   });
 

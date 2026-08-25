@@ -1,3 +1,4 @@
+import type { ProjectLanguage } from "../knowledge/types.js";
 import type { LanePlan } from "../lanes/capabilities.js";
 import type { SecretBag } from "../lanes/secrets.js";
 import type { Platform } from "../types.js";
@@ -18,6 +19,8 @@ How to work:
 - Your LAST action before writing the summary must be a fresh read of the screen (get_elements or get_accessibility_tree), even if you are confident the scenario worked. The generated test asserts on what you report here: if you never look at the end state, the assertion gets written from the wording of the request instead, and it will name an element that does not exist. Budget a call for this.
 - Report the end state in your own words using only text and locators you just read. If the app landed somewhere different from what the request implied — a catalogue instead of a "dashboard", a modal instead of a new page — say what is actually there. That is useful information, not a failure on your part.
 - If an element is missing, do not invent a workaround silently: re-read the screen, scroll or switch context if the platform supports it, and try a different observed locator.
+- Account actions (logout/sign out, settings, switch profile) are routinely hidden behind an icon-only avatar or profile control with no visible text — click it first to reveal a menu, then re-read the screen for the action inside it. Do not conclude an action does not exist just because no element on the current screen names it.
+- The scenario's wording is not the UI's wording. A request to "logout" may be labelled "Sign Out", "Log Off", or sit inside a settings menu; "delete" may appear as "Remove" or a trash icon. Match by what the control plainly does, not by string identity with the request.
 - Cookie and consent banners load a second or two AFTER the page, so they are often absent on your first read and covering the form on your second. If one appears, dismiss it and then re-read the screen to confirm it is gone before continuing. Note in your summary that the banner exists and which button closes it — the generated test has to handle it too, and it cannot know unless you say so.
 - If the scenario is genuinely impossible on this app (the feature is absent, a login wall blocks you, the app crashed), stop and say so plainly in your final message. Do not fake a pass.
 
@@ -106,15 +109,35 @@ export function scaffoldTask(args: {
   ].join("\n");
 }
 
-/** Also frozen — the recorded run, transcript, and structured plan arrive in the user turn. */
-export const SYNTH_SYSTEM = `You convert a structured test plan into a clean, runnable WebdriverIO test spec.
+/** The fence tag the model is told to wrap its output in, per project language. */
+export function fenceFor(language: ProjectLanguage): string {
+  return language === "ts" ? "typescript" : "javascript";
+}
+
+/**
+ * Also frozen — the recorded run, transcript, and structured plan arrive in the
+ * user turn. Parameterised only by output language: everything about selectors,
+ * assertions, credentials and suite hygiene is identical either way, and the
+ * two differences are the file the model is asked for and the fence it wraps
+ * the answer in.
+ */
+export function synthSystem(language: ProjectLanguage = "js"): string {
+  const emitLine =
+    language === "ts"
+      ? "- Emit ONE TypeScript file, ESM, targeting the WebdriverIO test runner with the Mocha framework. Use the globals the runner injects: \\`browser\\`, \\`$\\`, \\`$$\\`, \\`expect\\`. Do NOT import 'webdriverio', do NOT call remote(), do NOT create or close a session — the runner owns the session lifecycle.\n- Keep the TypeScript light. The helpers carry their own types, so annotations are almost never needed; add one only where it makes the code clearer to a reader. Never add a cast or a non-null assertion to satisfy a compiler you cannot see — specs run through a transpiler that does not type-check, so a guess there buys nothing and obscures the real code."
+      : "- Emit ONE JavaScript file, ESM, targeting the WebdriverIO test runner with the Mocha framework. Use the globals the runner injects: \\`browser\\`, \\`$\\`, \\`$$\\`, \\`expect\\`. Do NOT import 'webdriverio', do NOT call remote(), do NOT create or close a session — the runner owns the session lifecycle.";
+
+  return SYNTH_TEMPLATE.replace("__EMIT_LINE__", emitLine).replace("__FENCE__", fenceFor(language));
+}
+
+const SYNTH_TEMPLATE = `You convert a structured test plan into a clean, runnable WebdriverIO test spec.
 
 You receive: the plan (Test / Target / Preconditions / Steps / Expected Result — produced in an earlier structuring pass), the scenario in plain English, a transcript of what the agent actually did on the device, and the raw JS that the MCP server recorded from those tool calls.
 
 Implement the plan exactly — one it() step per numbered Steps line, in the same order, and one real assertion per Expected Result line. Do not add steps the plan does not list, and do not drop or merge steps it does. The plan is the source of truth for structure; the transcript and recorded code are the source of truth for the concrete selectors and values.
 
 Output requirements:
-- Emit ONE JavaScript file, ESM, targeting the WebdriverIO test runner with the Mocha framework. Use the globals the runner injects: \`browser\`, \`$\`, \`$$\`, \`expect\`. Do NOT import 'webdriverio', do NOT call remote(), do NOT create or close a session — the runner owns the session lifecycle.
+__EMIT_LINE__
 - Interact through the test framework's helpers, imported as: import { click, type, getText, isVisible, waitForGone, waitForPageLoad } from '@testlab/framework';
   * click(selector, { label })            — waits for clickable, then clicks once
   * type(selector, text, { label })       — waits, clears, types
@@ -150,13 +173,13 @@ Selector syntax — write selectors the way they were observed, preferring in th
 Avoid brittle class-chain, layout-coupled, or absolute-XPath selectors even if one appeared in the recorded code — replace it with the nearest observed semantic alternative instead.
 
 Credentials — the transcript may contain a real value typed into a password/token/OTP field:
-- Keep the value (the spec must still be able to log in), but never log it in plaintext: use \`await el.setValue(value, { mask: true })\` for any field whose name, label, or type marks it as a credential.
+- Keep the value (the spec must still be able to log in), but never log it in plaintext: use \`type(selector, value, { label, mask: true })\` for any field whose name, label, or type marks it as a credential — the same helper as any other field, not a raw \`\$(selector).setValue(...)\`. \`mask\` keeps it out of WebdriverIO's own command log the same way the raw call would, and going through the helper is what lets this field become a page-object method later instead of staying a selector hard-coded in the spec forever.
 - Never write a comment that echoes the credential value.
 
 Suite hygiene — each generated spec runs cold and alone, so it must not assume state left by another run:
 - If the scenario depends on being logged out, or on a clean cart/form, reset that state explicitly (clear cookies/storage, or navigate to a known start point) rather than assuming it.
 
-Respond with the file contents inside a single \`\`\`javascript fenced block, and nothing else. No preamble, no explanation after.`;
+Respond with the file contents inside a single \`\`\`__FENCE__ fenced block, and nothing else. No preamble, no explanation after.`;
 
 /**
  * Frozen. A short, cheap pass run only after a lane ends up genuinely
@@ -246,6 +269,7 @@ export function extendSynthTask(args: {
   existingCode: string;
   transcript: string;
   recorded: string | null;
+  language?: ProjectLanguage;
 }): string {
   const parts = [
     `Platform: ${args.platform}`,
@@ -255,7 +279,8 @@ export function extendSynthTask(args: {
     args.mergedScaffold,
     "",
     "Existing file — keep every line of this exactly as it is; add the new steps at the end of the same it() block, immediately before its closing lines:",
-    "```javascript",
+    // The client's own saved spec, so this follows the project's language.
+    "```" + fenceFor(args.language ?? "js"),
     args.existingCode,
     "```",
     "",

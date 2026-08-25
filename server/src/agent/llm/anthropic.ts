@@ -9,6 +9,7 @@ import type {
   StopReason,
   TokenUsage,
 } from "./types.js";
+import { estimateTokens, trimHistory } from "./budget.js";
 
 export interface AnthropicProviderOptions {
   apiKey: string;
@@ -24,9 +25,12 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): LlmProv
     model: opts.model,
     supportsVision: true,
 
-    startConversation({ system, tools, maxTokens, sendImages }) {
+    startConversation({ system, tools, maxTokens, sendImages, requestBudgetTokens = 0 }) {
       const messages: Anthropic.MessageParam[] = [];
       const toolDefs = tools.map(toAnthropicTool);
+      // System lives outside `messages` here, so it counts as overhead rather
+      // than as trimmable history.
+      const overhead = estimateTokens(system) + estimateTokens(toolDefs) + maxTokens;
 
       const conversation: LlmConversation = {
         async send(input) {
@@ -35,6 +39,16 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): LlmProv
               ? { role: "user", content: input }
               : { role: "user", content: input.map((r) => toToolResult(r, sendImages)) },
           );
+
+          // Only the opening task is pinned. Dropping whole assistant→user
+          // pairs preserves both the strict user/assistant alternation the API
+          // requires and every tool_use ↔ tool_result pairing.
+          trimHistory(messages, {
+            overhead,
+            budget: requestBudgetTokens,
+            pinned: 1,
+            startsGroup: (m) => m.role === "assistant",
+          });
 
           const response = await client.messages.create({
             model: opts.model,

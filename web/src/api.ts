@@ -2,9 +2,11 @@ import type {
   BatchCase,
   BatchState,
   BatchSummary,
+  ClientRecord,
   Platform,
   RunEvent,
   RunState,
+  ReviewRequest,
   RunSummary,
   RunTarget,
   ServerCapabilities,
@@ -122,6 +124,9 @@ export interface CreateBatchBody {
   platforms: Platform[];
   headless: boolean;
   stabilityRuns?: number;
+  clientId?: string;
+  /** Applied to every case in the batch — one login, tested across many scenarios. */
+  secrets?: Record<string, string>;
 }
 
 export async function createBatch(body: CreateBatchBody): Promise<{ id: string; batch: BatchState }> {
@@ -153,6 +158,38 @@ export async function fetchBatch(id: string): Promise<{ batch: BatchState; runs:
  * "do not reconnect". Without that, a tab left open on a cleared run retries
  * forever, and the reconnects surface as ECONNRESET noise in the dev proxy.
  */
+export async function fetchClients(): Promise<ClientRecord[]> {
+  const { clients } = await parse<{ clients: ClientRecord[] }>(await fetch("/api/clients"));
+  return clients;
+}
+
+export async function onboardClient(id: string, name: string): Promise<ClientRecord> {
+  const res = await fetch("/api/clients", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id, name }),
+  });
+  const { client } = await parse<{ client: ClientRecord }>(res);
+  return client;
+}
+
+export interface LinkRepoBody {
+  url: string;
+  baseBranch: string;
+  tokenEnvVar: string;
+}
+
+/** The server proves the URL and token work (a real `git ls-remote`) before this resolves. */
+export async function linkClientRepo(id: string, body: LinkRepoBody): Promise<ClientRecord> {
+  const res = await fetch(`/api/clients/${id}/repo`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const { client } = await parse<{ client: ClientRecord }>(res);
+  return client;
+}
+
 export function streamRun(
   runId: string,
   handlers: { onEvent: (event: RunEvent) => void; onError: (message: string) => void },
@@ -175,4 +212,43 @@ export function streamRun(
   };
 
   return () => source.close();
+}
+
+/**
+ * The queue of changes waiting on a human, newest first.
+ *
+ * Deliberately without diffs: a queue of twenty changes should not carry
+ * twenty full diffs to the browser. `fetchReview` gets one when it is opened.
+ */
+export async function fetchReviews(clientId: string): Promise<ReviewRequest[]> {
+  const res = await fetch(`/api/clients/${encodeURIComponent(clientId)}/reviews`);
+  const { reviews } = await parse<{ reviews: ReviewRequest[] }>(res);
+  return reviews;
+}
+
+export async function fetchReview(clientId: string, reviewId: string): Promise<{ review: ReviewRequest; diff: string | null }> {
+  const res = await fetch(`/api/clients/${encodeURIComponent(clientId)}/reviews/${encodeURIComponent(reviewId)}`);
+  return parse<{ review: ReviewRequest; diff: string | null }>(res);
+}
+
+/** Push it. The reviewer's name goes into the commit and the record. */
+export async function approveReview(clientId: string, reviewId: string, reviewer: string, note?: string): Promise<ReviewRequest> {
+  const res = await fetch(`/api/clients/${encodeURIComponent(clientId)}/reviews/${encodeURIComponent(reviewId)}/approve`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ reviewer, note }),
+  });
+  const { review } = await parse<{ review: ReviewRequest }>(res);
+  return review;
+}
+
+/** Drop it. The change leaves the project, not just the push queue. */
+export async function rejectReview(clientId: string, reviewId: string, reviewer: string, note?: string): Promise<ReviewRequest> {
+  const res = await fetch(`/api/clients/${encodeURIComponent(clientId)}/reviews/${encodeURIComponent(reviewId)}/reject`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ reviewer, note }),
+  });
+  const { review } = await parse<{ review: ReviewRequest }>(res);
+  return review;
 }

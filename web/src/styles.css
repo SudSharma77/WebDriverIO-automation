@@ -209,12 +209,14 @@ body {
   overflow-y: auto;
 }
 
+/* Its own tab, not a docked strip: same full-height treatment as .panel gets
+   in the sidebar, so a run list finally has room for whole prompts and a
+   comfortable row height instead of a 260px peephole. */
 .history {
-  flex: none;
-  border-top: 1px solid var(--border);
+  flex: 1;
+  min-height: 0;
   background: var(--surface);
-  padding: var(--space-4) var(--space-5);
-  max-height: 260px;
+  padding: var(--space-5);
   overflow-y: auto;
 }
 
@@ -357,6 +359,85 @@ body {
   flex: none;
   font-size: 10px;
   color: var(--text-faint);
+}
+
+/* Clients tab - same shell as .history (own scroll region, uppercase eyebrow
+   title), since it lives in the same sidebar slot. */
+.clients {
+  flex: 1;
+  min-height: 0;
+  background: var(--surface);
+  padding: var(--space-5);
+  overflow-y: auto;
+}
+
+.clients__head { margin-bottom: var(--space-3); }
+
+.clients__title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.clients__note {
+  margin: 0 0 var(--space-3);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.clients__onboard {
+  display: grid;
+  gap: var(--space-2);
+  padding-bottom: var(--space-4);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.clients__list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2); }
+
+.clients__row { border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+
+.clients__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.clients__item:hover { background: var(--surface-raised); }
+.clients__item[aria-expanded="true"] { background: var(--surface-raised); }
+
+.clients__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.clients__id { flex: none; color: var(--text-faint); font-size: 11px; }
+
+.clients__repo-status {
+  flex: none;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--text-faint);
+  background: var(--surface-sunken);
+}
+.clients__repo-status[data-tone="ok"] { color: var(--pass); background: var(--pass-soft); }
+.clients__repo-status[data-tone="warn"] { color: var(--run); background: var(--run-soft); }
+
+.clients__repo-form {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-top: 1px solid var(--border);
+  background: var(--surface-sunken);
 }
 
 .mode-toggle {
@@ -1708,6 +1789,28 @@ kbd,
 .saved__moved s { color: var(--text-faint); }
 .saved__moved strong { color: var(--text); font-weight: 600; }
 
+.saved__hint { margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border); }
+
+.saved__hint h5 {
+  margin: 0 0 var(--space-2);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.saved__hint p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.saved__hint code { color: var(--text); }
+
+.saved__hint[data-tone="failed"] h5 { color: var(--fail); }
+
 /* Credentials editor. Name and value sit on one row on desktop and stack on
    narrow viewports, where a three-column grid would squeeze both to uselessness. */
 .secrets { list-style: none; margin: 0 0 var(--space-3); padding: 0; display: grid; gap: var(--space-2); }
@@ -1744,4 +1847,169 @@ kbd,
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text-faint);
+}
+
+/* Review queue — the human gate before anything reaches a client's repo. */
+.reviews {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line, #2a2a2a);
+}
+
+.reviews__head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-end;
+  justify-content: space-between;
+}
+
+.reviews__title {
+  margin: 0;
+  font-size: 0.85rem;
+  letter-spacing: 0.02em;
+}
+
+.reviews__who {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.72rem;
+  opacity: 0.85;
+}
+
+.reviews__who input {
+  padding: 0.3rem 0.45rem;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--line, #2a2a2a);
+  border-radius: 4px;
+}
+
+.reviews__note,
+.reviews__empty {
+  margin: 0.5rem 0 0;
+  font-size: 0.76rem;
+  opacity: 0.8;
+}
+
+.reviews__list {
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.reviews__summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--line, #2a2a2a);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.reviews__summary:hover,
+.reviews__summary:focus-visible {
+  border-color: var(--accent, #6ea8fe);
+}
+
+.reviews__scenario {
+  font-size: 0.8rem;
+}
+
+.reviews__meta {
+  font-size: 0.7rem;
+  opacity: 0.7;
+}
+
+.reviews__detail {
+  padding: 0.5rem 0.55rem 0.6rem;
+  border: 1px solid var(--line, #2a2a2a);
+  border-top: none;
+  border-radius: 0 0 5px 5px;
+}
+
+.reviews__files {
+  margin: 0 0 0.5rem;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.72rem;
+}
+
+.reviews__status {
+  display: inline-block;
+  min-width: 1.4em;
+  opacity: 0.7;
+}
+
+.reviews__diff {
+  max-height: 22rem;
+  overflow: auto;
+  margin: 0 0 0.6rem;
+  padding: 0.5rem;
+  font-size: 0.7rem;
+  line-height: 1.45;
+  white-space: pre;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 4px;
+}
+
+.reviews__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.reviews__actions button {
+  padding: 0.35rem 0.7rem;
+  font: inherit;
+  font-size: 0.76rem;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--accent, #6ea8fe);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.reviews__actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.reviews__reject {
+  border-color: var(--danger, #e06c75) !important;
+}
+
+.reviews__warning {
+  flex: 1 1 14rem;
+  font-size: 0.68rem;
+  opacity: 0.7;
+}
+
+.reviews__history {
+  margin-top: 0.6rem;
+  font-size: 0.74rem;
+}
+
+.reviews__history ul {
+  margin: 0.35rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
 }

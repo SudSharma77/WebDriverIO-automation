@@ -123,8 +123,15 @@ describe("codegen", () => {
     assert.match(source, /async clickSignInButton\(\)/);
   });
 
+  // The URL is the fallback rather than the literal: baseUrl() returns it
+  // unchanged unless the run configures an environment, so this behaves
+  // exactly like a hardcoded URL until someone points the suite elsewhere.
   it("gives a page with a URL an open\\(\\) method", () => {
-    assert.match(renderPage(login!), /async open\(\) \{[\s\S]*browser\.url\("https:\/\/shop\.example\.com\/login"\)/);
+    assert.match(
+      renderPage(login!),
+      /async open\(\) \{[\s\S]*browser\.url\(baseUrl\("https:\/\/shop\.example\.com\/login"\)\)/,
+    );
+    assert.match(renderPage(login!), /import \{ baseUrl \} from '\.\.\/utils\/env\.js';/);
   });
 
   it("exports a ready-made instance so specs need no constructor noise", () => {

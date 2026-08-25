@@ -38,6 +38,8 @@ function build(model: string): LlmProvider {
     model,
     supportsVision,
     maxRetries,
+    // Google's compatibility layer documents the older field name.
+    tokenParam: provider === "gemini" ? "max_tokens" : "max_completion_tokens",
   });
 }
 

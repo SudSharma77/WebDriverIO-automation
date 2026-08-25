@@ -9,13 +9,15 @@ import {
   EXTEND_SCAFFOLD_SYSTEM,
   FAILURE_SUMMARY_SYSTEM,
   SCAFFOLD_SYSTEM,
-  SYNTH_SYSTEM,
+  fenceFor,
+  synthSystem,
   extendScaffoldTask,
   extendSynthTask,
   failureSummaryTask,
   scaffoldTask,
   synthTask,
 } from "./prompts.js";
+import type { ProjectLanguage } from "../knowledge/types.js";
 import type { LanePlan } from "../lanes/capabilities.js";
 import type { Platform } from "../types.js";
 
@@ -25,6 +27,8 @@ export interface SynthArgs {
   plan: LanePlan;
   transcript: string;
   recorded: string | null;
+  /** What the client's project is written in. Decides the file asked for and the fence. */
+  language?: ProjectLanguage;
 }
 
 /**
@@ -41,7 +45,7 @@ export async function synthesizeSpec(args: SynthArgs): Promise<{ code: string; u
   usage = addUsage(usage, scaffoldResult.usage);
   const scaffold = scaffoldResult.scaffold;
 
-  const first = await complete(SYNTH_SYSTEM, [{ role: "user", text: synthTask({ ...args, scaffold }) }]);
+  const first = await complete(synthSystem(args.language), [{ role: "user", text: synthTask({ ...args, scaffold }) }]);
   usage = addUsage(usage, first.usage);
   let code = guardSpec(extractCode(first.text));
 
@@ -49,7 +53,7 @@ export async function synthesizeSpec(args: SynthArgs): Promise<{ code: string; u
   // lint rule can't be. eslint-plugin-wdio's rules aren't auto-fixable, so a
   // real hit (most commonly a missing `await` before `expect(...)`, which
   // silently never actually asserts anything) gets one targeted repair call.
-  const lint = await lintSpec(code);
+  const lint = await lintSpec(code, args.language);
   if (lint.issues.length > 0) {
     const fixed = await fixLintIssues({ ...args, spec: code, scaffold, issues: lint.issues });
     usage = addUsage(usage, fixed.usage);
@@ -71,6 +75,7 @@ export interface ExtendArgs {
   recorded: string | null;
   /** The base run's full spec, including its scaffold header. */
   existingCode: string;
+  language?: ProjectLanguage;
 }
 
 /**
@@ -101,13 +106,13 @@ export async function extendSpec(args: ExtendArgs): Promise<{ code: string; usag
 
   const mergedScaffold = `${originalScaffold}\n${newSteps}`;
 
-  const first = await complete(SYNTH_SYSTEM, [
+  const first = await complete(synthSystem(args.language), [
     { role: "user", text: extendSynthTask({ ...args, mergedScaffold, existingCode }) },
   ]);
   usage = addUsage(usage, first.usage);
   let code = guardSpec(extractCode(first.text));
 
-  const lint = await lintSpec(code);
+  const lint = await lintSpec(code, args.language);
   if (lint.issues.length > 0) {
     const fixed = await fixExtendLintIssues({ ...args, mergedScaffold, existingCode, spec: code, issues: lint.issues });
     usage = addUsage(usage, fixed.usage);
@@ -120,9 +125,9 @@ export async function extendSpec(args: ExtendArgs): Promise<{ code: string; usag
 async function fixExtendLintIssues(
   args: ExtendArgs & { mergedScaffold: string; existingCode: string; spec: string; issues: string[] },
 ): Promise<{ code: string; usage: TokenUsage }> {
-  const result = await complete(SYNTH_SYSTEM, [
+  const result = await complete(synthSystem(args.language), [
     { role: "user", text: extendSynthTask(args) },
-    { role: "assistant", text: "```javascript\n" + args.spec + "\n```" },
+    { role: "assistant", text: "```" + fenceFor(args.language ?? "js") + "\n" + args.spec + "\n```" },
     {
       role: "user",
       text: [
@@ -130,7 +135,7 @@ async function fixExtendLintIssues(
         "",
         args.issues.map((i) => `- ${i}`).join("\n"),
         "",
-        "Fix ONLY these issues — do not change the plan, the selectors, or the assertions otherwise. Emit the corrected full file in one ```javascript block, nothing else.",
+        `Fix ONLY these issues — do not change the plan, the selectors, or the assertions otherwise. Emit the corrected full file in one \`\`\`${fenceFor(args.language ?? "js")} block, nothing else.`,
       ].join("\n"),
     },
   ]);
@@ -144,9 +149,9 @@ function stripScaffoldHeader(code: string): string {
 async function fixLintIssues(
   args: SynthArgs & { spec: string; scaffold: string; issues: string[] },
 ): Promise<{ code: string; usage: TokenUsage }> {
-  const result = await complete(SYNTH_SYSTEM, [
+  const result = await complete(synthSystem(args.language), [
     { role: "user", text: synthTask(args) },
-    { role: "assistant", text: "```javascript\n" + args.spec + "\n```" },
+    { role: "assistant", text: "```" + fenceFor(args.language ?? "js") + "\n" + args.spec + "\n```" },
     {
       role: "user",
       text: [
@@ -154,7 +159,7 @@ async function fixLintIssues(
         "",
         args.issues.map((i) => `- ${i}`).join("\n"),
         "",
-        "Fix ONLY these issues — do not change the plan, the selectors, or the assertions otherwise. Emit the corrected full file in one ```javascript block, nothing else.",
+        `Fix ONLY these issues — do not change the plan, the selectors, or the assertions otherwise. Emit the corrected full file in one \`\`\`${fenceFor(args.language ?? "js")} block, nothing else.`,
       ].join("\n"),
     },
   ]);
@@ -210,7 +215,7 @@ export async function repairSpec(
   parts.push(
     "",
     "Fix the spec so it passes on a cold session. Common causes: an element that needs waitForDisplayed before interaction, a step that assumed state left behind by the exploratory session, or a selector that was observed after a scroll that the spec never performs. Use the DOM snapshot above (if present) to confirm which of these actually happened rather than guessing.",
-    "Keep the same plan, the same scenario, and the same assertions — fix the implementation, not the structure. Emit the corrected full file (including its structured-plan comment header, unchanged) in one ```javascript block, nothing else.",
+    `Keep the same plan, the same scenario, and the same assertions — fix the implementation, not the structure. Emit the corrected full file (including its structured-plan comment header, unchanged) in one \`\`\`${fenceFor(args.language ?? "js")} block, nothing else.`,
   );
 
   // The plan already lives in the header this file was generated with (see
@@ -223,9 +228,9 @@ export async function repairSpec(
     scaffold = generated.scaffold;
   }
 
-  const result = await complete(SYNTH_SYSTEM, [
+  const result = await complete(synthSystem(args.language), [
     { role: "user", text: synthTask({ ...args, scaffold }) },
-    { role: "assistant", text: "```javascript\n" + unbindSecretsInSpec(args.spec) + "\n```" },
+    { role: "assistant", text: "```" + fenceFor(args.language ?? "js") + "\n" + unbindSecretsInSpec(args.spec) + "\n```" },
     { role: "user", text: parts.join("\n") },
   ]);
   usage = addUsage(usage, result.usage);

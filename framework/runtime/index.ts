@@ -21,8 +21,40 @@ const DEFAULT_TIMEOUT = 15_000;
 /** Interactive things worth listing when a selector misses. Web only. */
 const CANDIDATE_QUERY = "button, a[href], input, select, textarea, [role=button], [data-testid], [aria-label]";
 
+export interface FindOptions {
+  /** Milliseconds to wait for the element. Defaults to 15000. */
+  timeout?: number;
+  /** Human name used in the failure message, e.g. "the checkout button". */
+  label?: string;
+}
+
+export interface TypeOptions extends FindOptions {
+  /** Clear the field before typing. Defaults to true. */
+  clear?: boolean;
+  /**
+   * Keep the value out of WebdriverIO's own command log. Set it for any
+   * credential field.
+   */
+  mask?: boolean;
+}
+
+/**
+ * What `type()` will accept.
+ *
+ * Deliberately includes `undefined`: a spec reads credentials as
+ * `process.env.TESTLAB_SECRET_*`, which TypeScript types as `string |
+ * undefined`, and the missing-credential case is one this runtime handles
+ * explicitly with a far better message than a compile error could give (see
+ * `type`). Narrowing this to `string` would only push every generated spec
+ * into a non-null assertion that silences the honest signal.
+ */
+export type TypedValue = string | number | null | undefined;
+
+/** Thrown when a selector does not match; lists what was on screen instead. */
 export class ElementNotFoundError extends Error {
-  constructor(selector, label, nearby) {
+  readonly selector: string;
+
+  constructor(selector: string, label: string | undefined, nearby: string[]) {
     const what = label ? `${label} (${selector})` : selector;
     const suggestions = nearby.length
       ? `\n\nInteractive elements actually present:\n${nearby.map((n) => `  ${n}`).join("\n")}`
@@ -40,9 +72,13 @@ export class ElementNotFoundError extends Error {
  * description is what makes the difference between a repair pass that guesses
  * and one that corrects.
  */
-export async function find(selector, options = {}) {
+export async function find(selector: string, options: FindOptions = {}): Promise<WebdriverIO.Element> {
   const { timeout = DEFAULT_TIMEOUT, label } = options;
-  const element = await $(selector);
+  // `.getElement()` rather than a bare await: WebdriverIO v9's chainable is a
+  // proxy that is thenable at runtime but is not a Promise subtype in its own
+  // types, so `await` alone leaves the chainable in hand instead of the
+  // element. This is the explicit unwrap that matches what already happens.
+  const element = await $(selector).getElement();
   try {
     await element.waitForExist({ timeout });
     return element;
@@ -57,10 +93,10 @@ export async function find(selector, options = {}) {
  * Best-effort by design: this only ever runs on a path that is already failing,
  * so it must not throw and must not mask the original error.
  */
-export async function describeScreen(limit = 25) {
+export async function describeScreen(limit = 25): Promise<string[]> {
   try {
-    const elements = await $$(CANDIDATE_QUERY);
-    const described = [];
+    const elements = await $$(CANDIDATE_QUERY).getElements();
+    const described: string[] = [];
     for (const element of elements.slice(0, limit)) {
       const line = await describeElement(element);
       if (line) described.push(line);
@@ -71,7 +107,7 @@ export async function describeScreen(limit = 25) {
   }
 }
 
-async function describeElement(element) {
+async function describeElement(element: WebdriverIO.Element): Promise<string | null> {
   try {
     if (!(await element.isDisplayed())) return null;
 
@@ -106,7 +142,7 @@ async function describeElement(element) {
  * orders. Waiting for clickable is the correct fix for the flakiness a retry
  * would have papered over.
  */
-export async function click(selector, options = {}) {
+export async function click(selector: string, options: FindOptions = {}): Promise<void> {
   const { timeout = DEFAULT_TIMEOUT, label } = options;
   const element = await find(selector, { timeout, label });
 
@@ -132,6 +168,14 @@ export async function click(selector, options = {}) {
   }
 }
 
+interface BlockerDescription {
+  tag: string;
+  id: string | null;
+  testId: string | null;
+  className: string | null;
+  text: string;
+}
+
 /**
  * What is actually on top of this element, if anything.
  *
@@ -140,9 +184,12 @@ export async function click(selector, options = {}) {
  * Best-effort — this only runs on a path that is already failing, so it must
  * never throw and never mask the original error.
  */
-async function describeBlocker(element) {
+async function describeBlocker(element: WebdriverIO.Element): Promise<string | null> {
   try {
-    const found = await browser.execute((el) => {
+    // The element crosses into the browser as a real DOM node, which is what
+    // the callback actually receives — the cast says so rather than pretending
+    // a WebdriverIO handle survives serialisation.
+    const found = await browser.execute((el: HTMLElement): BlockerDescription | null => {
       const rect = el.getBoundingClientRect();
       if (rect.width === 0 && rect.height === 0) return null;
 
@@ -151,7 +198,7 @@ async function describeBlocker(element) {
 
       // Walk up to whichever ancestor established the stacking context — the
       // overlay container is far more identifiable than the <p> under the cursor.
-      let node = top;
+      let node: Element = top;
       for (let i = 0; i < 6 && node.parentElement; i++) {
         const position = getComputedStyle(node).position;
         if (position === "fixed" || position === "sticky") break;
@@ -162,10 +209,10 @@ async function describeBlocker(element) {
         tag: node.tagName.toLowerCase(),
         id: node.id || null,
         testId: node.getAttribute("data-testid"),
-        className: typeof node.className === "string" ? node.className.trim().split(/\s+/)[0] : null,
+        className: typeof node.className === "string" ? (node.className.trim().split(/\s+/)[0] ?? null) : null,
         text: (node.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80),
       };
-    }, element);
+    }, element as unknown as HTMLElement);
 
     if (!found) return null;
 
@@ -188,8 +235,8 @@ async function describeBlocker(element) {
  * passwords, and the moment a failure prints "expected 'hunter2', got ''" the
  * credential is in the run log, the SSE stream and the repair prompt.
  */
-export async function type(selector, text, options = {}) {
-  const { timeout = DEFAULT_TIMEOUT, label, clear = true } = options;
+export async function type(selector: string, text: TypedValue, options: TypeOptions = {}): Promise<void> {
+  const { timeout = DEFAULT_TIMEOUT, label, clear = true, mask = false } = options;
 
   // Checked before touching the page, because WebdriverIO's own message for
   // this ("setValue/addValue only take string or number values") describes the
@@ -209,23 +256,27 @@ export async function type(selector, text, options = {}) {
   const element = await find(selector, { timeout, label });
   await element.waitForDisplayed({ timeout });
   if (clear) await element.clearValue();
-  await element.setValue(text);
+  // `mask` is WebdriverIO's own command-log redaction, forwarded rather than
+  // reimplemented: it keeps a credential out of the WDIO reporter's own
+  // command log, which the runtime's own try/catch messaging above cannot
+  // reach into. A field with no reason to be masked passes no second arg.
+  await (mask ? element.setValue(text, { mask: true }) : element.setValue(text));
 }
 
-export async function selectOption(selector, optionText, options = {}) {
+export async function selectOption(selector: string, optionText: string, options: FindOptions = {}): Promise<void> {
   const { timeout = DEFAULT_TIMEOUT, label } = options;
   const element = await find(selector, { timeout, label });
   await element.waitForDisplayed({ timeout });
   await element.selectByVisibleText(optionText);
 }
 
-export async function getText(selector, options = {}) {
+export async function getText(selector: string, options: FindOptions = {}): Promise<string> {
   const element = await find(selector, options);
   await element.waitForDisplayed({ timeout: options.timeout ?? DEFAULT_TIMEOUT });
   return (await element.getText()).trim();
 }
 
-export async function isVisible(selector, options = {}) {
+export async function isVisible(selector: string, options: FindOptions = {}): Promise<boolean> {
   const { timeout = 3000 } = options;
   try {
     const element = await $(selector);
@@ -248,7 +299,7 @@ export async function isVisible(selector, options = {}) {
  * Waits for it, dismisses it, then waits for it to actually go away. Returns
  * whether there was anything to dismiss.
  */
-export async function dismissIfPresent(selector, options = {}) {
+export async function dismissIfPresent(selector: string, options: FindOptions = {}): Promise<boolean> {
   const { timeout = 5000, label } = options;
 
   if (!(await isVisible(selector, { timeout }))) return false;
@@ -268,8 +319,40 @@ export async function dismissIfPresent(selector, options = {}) {
   return true;
 }
 
+/**
+ * Narrate a business function's progress.
+ *
+ * Business functions compose page objects into one named operation ("log in",
+ * "add to watchlist"), which means a failure three calls deep otherwise
+ * surfaces with no indication of which part of the flow was underway. These
+ * two lines are what turn a stack trace into a story.
+ *
+ * Console only, deliberately: a spec runs inside a WebdriverIO worker whose
+ * output is already collected by the reporter, and a helper that also opened
+ * its own log file would race every other worker for it.
+ */
+export function step(message: string): void {
+  console.log(`  → ${message}`);
+}
+
+/**
+ * Record an observation, and hand it straight back.
+ *
+ * Returns its own argument so it can wrap a value in place rather than
+ * becoming a separate statement:
+ * `return { isEmpty: check('the cart is empty', await cart.isEmptyVisible()) }`.
+ *
+ * Note this only *reports* — it never throws. Business functions return
+ * observations and the spec asserts on them; a helper that failed the test
+ * here would put the assertion back in the wrong layer.
+ */
+export function check(description: string, result: boolean): boolean {
+  console.log(`  ${result ? "✓" : "✗"} ${description}`);
+  return result;
+}
+
 /** Wait for something to disappear — a spinner, a modal, a toast. */
-export async function waitForGone(selector, options = {}) {
+export async function waitForGone(selector: string, options: { timeout?: number } = {}): Promise<void> {
   const { timeout = DEFAULT_TIMEOUT } = options;
   const element = await $(selector);
   await element.waitForDisplayed({ timeout, reverse: true });
@@ -281,7 +364,7 @@ export async function waitForGone(selector, options = {}) {
  * document.readyState only, with no fixed pause: a sleep long enough to be
  * reliable is always long enough to waste minutes across a suite.
  */
-export async function waitForPageLoad(options = {}) {
+export async function waitForPageLoad(options: { timeout?: number } = {}): Promise<void> {
   const { timeout = DEFAULT_TIMEOUT } = options;
   await browser.waitUntil(async () => (await browser.execute(() => document.readyState)) === "complete", {
     timeout,

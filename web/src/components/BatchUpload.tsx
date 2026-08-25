@@ -1,7 +1,10 @@
 import { useId, useMemo, useRef, useState } from "react";
 import type { CreateBatchBody } from "../api";
+import { PLATFORMS, PLATFORM_LABEL, type Platform, type ServerCapabilities } from "../types";
+import { Credentials } from "./Credentials";
 
 interface Props {
+  capabilities: ServerCapabilities | null;
   busy: boolean;
   issues: Array<{ path: string; message: string }>;
   onSubmit: (body: CreateBatchBody) => void;
@@ -19,27 +22,54 @@ interface ParsedCase {
 
 /**
  * Bulk mode: upload or paste one test case per line, each optionally carrying
- * its own URL after a `|`. Web only for now — Android/iOS need a different
- * target shape per case (app path, device name), which would turn a one-line
- * format into something nobody wants to hand-write in a text file.
+ * its own URL after a `|` for the web lane. Android/iOS run the exact same app
+ * and device across every case in the batch — that's the one target shape that
+ * doesn't need per-line detail, so it stays a one-line-per-case format even
+ * with a device lane selected.
  */
-export function BatchUpload({ busy, issues, onSubmit }: Props) {
-  const ids = { text: useId(), defaultUrl: useId(), stability: useId() };
+export function BatchUpload({ capabilities, busy, issues, onSubmit }: Props) {
+  const ids = {
+    text: useId(),
+    defaultUrl: useId(),
+    androidApp: useId(),
+    iosApp: useId(),
+    iosDevice: useId(),
+    client: useId(),
+    stability: useId(),
+  };
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [text, setText] = useState("");
+  const [selected, setSelected] = useState<Platform[]>(["web"]);
   const [defaultUrl, setDefaultUrl] = useState("");
+  const [androidApp, setAndroidApp] = useState("");
+  const [iosApp, setIosApp] = useState("");
+  const [iosDeviceName, setIosDeviceName] = useState("iPhone 15 Pro");
   const [headless, setHeadless] = useState(false);
   const [stabilityRuns, setStabilityRuns] = useState(0);
+  const [clientId, setClientId] = useState("default");
+  const [secrets, setSecrets] = useState<Array<{ name: string; value: string }>>([]);
 
-  const { cases, lineErrors } = useMemo(() => parseCases(text, defaultUrl), [text, defaultUrl]);
+  const iosBlocked = capabilities !== null && !capabilities.iosAvailable;
+  const needsUrl = selected.includes("web");
+
+  const { cases, lineErrors } = useMemo(
+    () => parseCases(text, defaultUrl, needsUrl),
+    [text, defaultUrl, needsUrl],
+  );
 
   const issueFor = useMemo(() => {
     const map = new Map(issues.map((i) => [i.path, i.message]));
     return (path: string) => map.get(path);
   }, [issues]);
 
-  const canSubmit = !busy && cases.length > 0 && lineErrors.length === 0;
+  const toggle = (platform: Platform) => {
+    setSelected((current) =>
+      current.includes(platform) ? current.filter((p) => p !== platform) : [...current, platform],
+    );
+  };
+
+  const canSubmit = !busy && selected.length > 0 && cases.length > 0 && lineErrors.length === 0;
 
   const onFile = async (file: File) => {
     setText(await file.text());
@@ -49,10 +79,24 @@ export function BatchUpload({ busy, issues, onSubmit }: Props) {
     event.preventDefault();
     if (!canSubmit) return;
     onSubmit({
-      cases: cases.map((c) => ({ prompt: c.prompt, target: { webUrl: c.url } })),
-      platforms: ["web"],
+      cases: cases.map((c) => ({
+        prompt: c.prompt,
+        target: {
+          webUrl: needsUrl ? c.url : undefined,
+          androidApp: selected.includes("android") ? androidApp.trim() || undefined : undefined,
+          iosApp: selected.includes("ios") ? iosApp.trim() || undefined : undefined,
+          iosDeviceName: selected.includes("ios") ? iosDeviceName.trim() || undefined : undefined,
+        },
+      })),
+      platforms: selected,
       headless,
       stabilityRuns,
+      clientId: clientId.trim() || "default",
+      secrets: Object.fromEntries(
+        secrets
+          .filter((secret) => secret.name.trim() && secret.value)
+          .map((secret) => [secret.name.trim().toUpperCase(), secret.value]),
+      ),
     });
   };
 
@@ -72,7 +116,16 @@ export function BatchUpload({ busy, issues, onSubmit }: Props) {
           disabled={busy}
         />
         <p className="field__hint">
-          Each line is <code>prompt | url</code>. Omit the <code>| url</code> part to use the default URL below.
+          {needsUrl ? (
+            <>
+              Each line is <code>prompt | url</code>. Omit the <code>| url</code> part to use the default URL below.
+            </>
+          ) : (
+            <>
+              Each line is one test case. The <code>| url</code> suffix is ignored on device lanes — every case runs
+              against the app set below.
+            </>
+          )}
         </p>
         <div className="panel-actions">
           <button
@@ -97,23 +150,114 @@ export function BatchUpload({ busy, issues, onSubmit }: Props) {
         </div>
       </div>
 
-      <div className="field">
-        <label className="field__label" htmlFor={ids.defaultUrl}>
-          Default URL
-        </label>
-        <input
-          id={ids.defaultUrl}
-          className="input"
-          type="url"
-          inputMode="url"
-          value={defaultUrl}
-          onChange={(e) => setDefaultUrl(e.target.value)}
-          placeholder="https://example.com"
-          disabled={busy}
-        />
-        <p className="field__hint">Used for any line that doesn't specify its own URL.</p>
-        {issueFor("cases") && <p className="field__error">{issueFor("cases")}</p>}
-      </div>
+      <fieldset disabled={busy}>
+        <legend>Platforms</legend>
+        <div className="platforms">
+          {PLATFORMS.map((platform) => {
+            const disabled = platform === "ios" && iosBlocked;
+            return (
+              <label
+                key={platform}
+                className="platform-toggle"
+                style={{ ["--tint" as string]: `var(--${platform})` }}
+              >
+                <input
+                  type="checkbox"
+                  checked={selected.includes(platform)}
+                  onChange={() => toggle(platform)}
+                  disabled={disabled}
+                />
+                <span className="platform-toggle__name">{PLATFORM_LABEL[platform]}</span>
+                {platform === "ios" && (
+                  <span className="platform-toggle__note">
+                    {iosBlocked ? "no cloud farm configured" : (capabilities?.cloudProvider ?? "cloud")}
+                  </span>
+                )}
+                {platform === "android" && <span className="platform-toggle__note">local Appium</span>}
+                {platform === "web" && <span className="platform-toggle__note">local Chrome</span>}
+              </label>
+            );
+          })}
+        </div>
+        {selected.length === 0 && <p className="field__error">Pick at least one platform.</p>}
+      </fieldset>
+
+      {needsUrl && (
+        <div className="field">
+          <label className="field__label" htmlFor={ids.defaultUrl}>
+            Default URL
+          </label>
+          <input
+            id={ids.defaultUrl}
+            className="input"
+            type="url"
+            inputMode="url"
+            value={defaultUrl}
+            onChange={(e) => setDefaultUrl(e.target.value)}
+            placeholder="https://example.com"
+            disabled={busy}
+          />
+          <p className="field__hint">Used for any line that doesn't specify its own URL.</p>
+        </div>
+      )}
+
+      {issueFor("cases") && <p className="field__error">{issueFor("cases")}</p>}
+
+      {selected.includes("android") && (
+        <div className="field">
+          <label className="field__label" htmlFor={ids.androidApp}>
+            Android .apk
+          </label>
+          <input
+            id={ids.androidApp}
+            className="input"
+            value={androidApp}
+            onChange={(e) => setAndroidApp(e.target.value)}
+            placeholder="C:\\apps\\demo.apk"
+            aria-describedby={`${ids.androidApp}-hint`}
+            disabled={busy}
+          />
+          <p className="field__hint" id={`${ids.androidApp}-hint`}>
+            Absolute path on this machine, same app for every case. Appium must be running at{" "}
+            {capabilities?.appiumUrl ?? "127.0.0.1:4723"}.
+          </p>
+        </div>
+      )}
+
+      {selected.includes("ios") && (
+        <>
+          <div className="field">
+            <label className="field__label" htmlFor={ids.iosApp}>
+              iOS app id
+            </label>
+            <input
+              id={ids.iosApp}
+              className="input"
+              value={iosApp}
+              onChange={(e) => setIosApp(e.target.value)}
+              placeholder="bs://a1b2c3d4e5"
+              aria-describedby={`${ids.iosApp}-hint`}
+              disabled={busy}
+            />
+            <p className="field__hint" id={`${ids.iosApp}-hint`}>
+              Same app for every case. Upload the .ipa to {capabilities?.cloudProvider ?? "your farm"} first and
+              paste the id it returns.
+            </p>
+          </div>
+          <div className="field">
+            <label className="field__label" htmlFor={ids.iosDevice}>
+              iOS device
+            </label>
+            <input
+              id={ids.iosDevice}
+              className="input"
+              value={iosDeviceName}
+              onChange={(e) => setIosDeviceName(e.target.value)}
+              disabled={busy}
+            />
+          </div>
+        </>
+      )}
 
       {lineErrors.length > 0 && (
         <p className="field__error">
@@ -121,11 +265,41 @@ export function BatchUpload({ busy, issues, onSubmit }: Props) {
         </p>
       )}
 
-      <label className="platform-toggle" style={{ ["--tint" as string]: "var(--web)" }}>
-        <input type="checkbox" checked={headless} onChange={(e) => setHeadless(e.target.checked)} disabled={busy} />
-        <span className="platform-toggle__name">Headless Chrome</span>
-        <span className="platform-toggle__note">faster, no window</span>
-      </label>
+      {needsUrl && (
+        <label className="platform-toggle" style={{ ["--tint" as string]: "var(--web)" }}>
+          <input type="checkbox" checked={headless} onChange={(e) => setHeadless(e.target.checked)} disabled={busy} />
+          <span className="platform-toggle__name">Headless Chrome</span>
+          <span className="platform-toggle__note">faster, no window</span>
+        </label>
+      )}
+
+      <Credentials
+        secrets={secrets}
+        onChange={setSecrets}
+        busy={busy}
+        hint="Add one row per value the login needs. Applied to every case in this batch — one login, tested across many
+          scenarios. Values go to the browser under test and nowhere else."
+      />
+
+      <div className="field">
+        <label className="field__label" htmlFor={ids.client}>
+          Client
+        </label>
+        <input
+          id={ids.client}
+          className="input"
+          value={clientId}
+          onChange={(e) => setClientId(e.target.value)}
+          placeholder="default"
+          pattern="[a-z0-9][a-z0-9-]*"
+          spellCheck={false}
+          aria-describedby={`${ids.client}-hint`}
+          disabled={busy}
+        />
+        <p className="field__hint" id={`${ids.client}-hint`}>
+          Whose suite this grows. Every case in the batch accumulates under <code>clients/{clientId.trim() || "default"}/</code>.
+        </p>
+      </div>
 
       <div className="field">
         <label className="field__label" htmlFor={ids.stability}>
@@ -159,7 +333,11 @@ export function BatchUpload({ busy, issues, onSubmit }: Props) {
   );
 }
 
-function parseCases(text: string, defaultUrl: string): { cases: ParsedCase[]; lineErrors: Array<{ line: number; message: string }> } {
+function parseCases(
+  text: string,
+  defaultUrl: string,
+  needsUrl: boolean,
+): { cases: ParsedCase[]; lineErrors: Array<{ line: number; message: string }> } {
   const cases: ParsedCase[] = [];
   const lineErrors: Array<{ line: number; message: string }> = [];
 
@@ -167,7 +345,10 @@ function parseCases(text: string, defaultUrl: string): { cases: ParsedCase[]; li
     const line = raw.trim();
     if (!line) return;
 
-    const pipeIndex = line.lastIndexOf("|");
+    // On a device-only batch the `| suffix` isn't a URL field at all, so a
+    // stray `|` in the prompt text itself (rare, but plausible) shouldn't be
+    // sliced off.
+    const pipeIndex = needsUrl ? line.lastIndexOf("|") : -1;
     const prompt = (pipeIndex >= 0 ? line.slice(0, pipeIndex) : line).trim();
     const url = (pipeIndex >= 0 ? line.slice(pipeIndex + 1) : defaultUrl).trim();
 
@@ -175,7 +356,7 @@ function parseCases(text: string, defaultUrl: string): { cases: ParsedCase[]; li
       lineErrors.push({ line: i + 1, message: "test case needs a sentence or two" });
       return;
     }
-    if (!url) {
+    if (needsUrl && !url) {
       lineErrors.push({ line: i + 1, message: "no URL (and no default URL set)" });
       return;
     }

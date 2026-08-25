@@ -50,6 +50,9 @@ function ReuseNote({ reuse }: { reuse: NonNullable<LaneState["reuse"]> }) {
 /** What the client's project gained — the durable half of a passing run. */
 function SavedNote({ saved }: { saved: NonNullable<LaneState["saved"]> }) {
   const moved = saved.pages.flatMap((page) => page.changedLocators);
+  const unmasked = saved.pages.flatMap((page) => page.unmaskedMethods ?? []);
+  const flow = saved.flow;
+  const written = flow?.applied ? flow.names.filter((name) => !flow.reused?.includes(name)) : [];
 
   return (
     <div className="saved">
@@ -57,7 +60,14 @@ function SavedNote({ saved }: { saved: NonNullable<LaneState["saved"]> }) {
       <ul className="saved__list">
         <li>
           <code>{saved.specFile}</code>
-          <span className="saved__note">{saved.reusedExistingSpec ? "already present" : "new"}</span>
+          <span className="saved__note">
+            {saved.reusedExistingSpec
+              ? "already present"
+              : saved.addedToExistingSpec
+                ? "added as a new scenario"
+                : "new file"}
+            {!saved.reusedExistingSpec && saved.usesPageObjects && ", calls page objects"}
+          </span>
         </li>
         {saved.pages.map((page) => (
           <li key={page.className}>
@@ -80,6 +90,83 @@ function SavedNote({ saved }: { saved: NonNullable<LaneState["saved"]> }) {
               <s>{change.from}</s> → <strong>{change.to}</strong>
             </p>
           ))}
+        </div>
+      )}
+
+      {flow?.applied && (
+        <div className="saved__hint">
+          <h5>Business functions</h5>
+          <p>
+            {written.length > 0 && (
+              <>
+                The steps now live in {written.map((name) => <code key={name}>{name}</code>).reduce((all, one) => <>{all}, {one}</>)}
+                {flow.verified ? ", re-checked against the app" : " (not re-checked — no runner available)"}.{" "}
+              </>
+            )}
+            {flow.reused && flow.reused.length > 0 && (
+              <>
+                Reused{" "}
+                {flow.reused.map((name) => <code key={name}>{name}</code>).reduce((all, one) => <>{all}, {one}</>)}, which already
+                did exactly this — nothing new was written.{" "}
+              </>
+            )}
+            {flow.composedFrom?.map((from) => (
+              <span key={from.name}>
+                The first {from.steps} steps delegate to <code>{from.name}</code>.
+              </span>
+            ))}
+          </p>
+        </div>
+      )}
+
+      {flow && !flow.applied && (
+        <div className="saved__hint" data-tone="failed">
+          <h5>Business function not extracted</h5>
+          <p>
+            The scenario's steps were lifted into <code>{flow.names.join(", ")}</code>, but {flow.reason}. The original spec was
+            kept exactly as it passed.
+          </p>
+        </div>
+      )}
+
+      {unmasked.length > 0 && (
+        <div className="saved__hint" data-tone="failed">
+          <h5>Credential fields not masked</h5>
+          <p>
+            {unmasked.map((name) => (
+              <code key={name}>{name}</code>
+            ))}{" "}
+            {unmasked.length === 1 ? "types" : "type"} into a credential field without masking it, so the value reaches
+            WebdriverIO's command log. These page objects predate element-level masking; add{" "}
+            <code>{"{ mask: true }"}</code> to the call. Not changed automatically — this tool never rewrites a file you may have
+            edited.
+          </p>
+        </div>
+      )}
+
+      {saved.flowSuggestion && (
+        <div className="saved__hint">
+          <h5>Possible shared flow</h5>
+          <p>
+            The first {saved.flowSuggestion.steps} step{saved.flowSuggestion.steps === 1 ? "" : "s"} of this scenario match{" "}
+            <code>{saved.flowSuggestion.sharedWithFile}</code> ("{saved.flowSuggestion.sharedWithTitle}") — worth extracting into
+            a reusable flow by hand if this keeps recurring.
+          </p>
+        </div>
+      )}
+
+      {saved.repoSync && (
+        <div className="saved__hint" data-tone={saved.repoSync.pushed ? undefined : "failed"}>
+          <h5>{saved.repoSync.pushed ? "Pushed to the linked repo" : "Repo sync failed"}</h5>
+          <p>
+            {saved.repoSync.pushed ? (
+              <>
+                On branch <code>{saved.repoSync.branch}</code> — open a PR from it whenever you're ready to review.
+              </>
+            ) : (
+              saved.repoSync.error
+            )}
+          </p>
         </div>
       )}
     </div>

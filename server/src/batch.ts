@@ -9,6 +9,9 @@ export interface CreateBatchInput {
   platforms: Platform[];
   headless: boolean;
   stabilityRuns: number;
+  clientId?: string;
+  /** Applied to every case in the batch — see the route for why this isn't per-case. */
+  secrets?: Record<string, string>;
 }
 
 /**
@@ -48,6 +51,8 @@ class BatchStore {
           target: c.target,
           headless: input.headless,
           stabilityRuns: input.stabilityRuns,
+          clientId: input.clientId,
+          secrets: input.secrets,
         });
         batch.runIds.push(run.id);
         void saveBatch(batch);

@@ -109,16 +109,32 @@ function bestMatch(prompt: string, candidates: SpecRecord[]): Match | null {
   return best;
 }
 
-/** True when the two prompts describe opposite actions. */
+/**
+ * True when the two prompts describe scenarios that cannot share a spec:
+ * either straightforward opposites ("add" vs "remove"), or one prompt covering
+ * ground the other doesn't ("login then logout" vs "login") — replaying the
+ * narrower spec for the broader request would silently skip the extra part
+ * and still report it as verified.
+ *
+ * A pair only counts once it is actually in play — both of its words have to
+ * appear *somewhere* across the two prompts, or a word like "open" used in an
+ * unrelated sense ("open the profile page") would collide with the open/close
+ * pair even though nothing here is being closed. Once in play, any asymmetry
+ * in which prompt mentions which side is disqualifying: exact opposites
+ * (each prompt has only one side) and supersets (one prompt has both, the
+ * other only one) are both caught the same way. A prompt that mentions both
+ * sides is only safe against another prompt that also mentions both — same
+ * scenario, just reworded.
+ */
 export function opposed(a: string, b: string): boolean {
   const left = meaningfulWords(a);
   const right = meaningfulWords(b);
 
-  return OPPOSITES.some(
-    ([one, other]) =>
-      (left.has(one) && right.has(other) && !left.has(other)) ||
-      (left.has(other) && right.has(one) && !left.has(one)),
-  );
+  return OPPOSITES.some(([one, other]) => {
+    const inPlay = (left.has(one) || right.has(one)) && (left.has(other) || right.has(other));
+    if (!inPlay) return false;
+    return left.has(one) !== right.has(one) || left.has(other) !== right.has(other);
+  });
 }
 
 /**
@@ -147,10 +163,43 @@ const STOP_WORDS = new Set([
   "test", "with", "when", "should", "make", "sure", "able", "see", "using",
 ]);
 
+/**
+ * Multi-word phrasings collapsed onto one canonical word before tokenizing, so
+ * a client writing "sign out" and one writing "logout" describe the same
+ * scenario as far as matching is concerned — neither should have to guess the
+ * exact word an earlier run happened to use.
+ *
+ * Phrase-level, applied to the raw text before splitting on whitespace: a
+ * per-word synonym table can't merge "sign out" with "logout" because they
+ * tokenize into a different number of words to begin with.
+ *
+ * Deliberately narrow — pairs actually seen tripping up matching, not a
+ * general thesaurus. A miss here just costs one unnecessary exploration
+ * (safe); a wrong merge risks a false "same scenario" match (not safe), so
+ * this only grows when a specific case demonstrates the need.
+ *
+ * "log in"/"log out" are deliberately NOT here despite being common phrasings:
+ * bare "log" already carries other senses ("an activity log", "log this
+ * value"), and unlike "sign out" — which the length/stop-word filter already
+ * reduces to a bare "sign" only when paired with "out" adjacent to it — a
+ * split phrasing like "log a user in" would map inconsistently depending on
+ * how far apart the words land. "sign"/"login" have no such competing sense,
+ * so they merge safely; "log" doesn't, so it's left to plain word overlap.
+ */
+const SYNONYM_PHRASES: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\bsign[\s-]?out\b/g, "logout"],
+  [/\blog[\s-]?off\b/g, "logout"],
+  [/\bsign[\s-]?in\b/g, "login"],
+  [/\bsign[\s-]?up\b/g, "register"],
+  [/\bcreate[\s-]?an?[\s-]?account\b/g, "register"],
+];
+
 function meaningfulWords(text: string): Set<string> {
+  let normalized = text.toLowerCase();
+  for (const [phrase, canonical] of SYNONYM_PHRASES) normalized = normalized.replace(phrase, canonical);
+
   return new Set(
-    text
-      .toLowerCase()
+    normalized
       .replace(/[^a-z0-9\s]/g, " ")
       .split(/\s+/)
       .filter((word) => word.length > 2 && !STOP_WORDS.has(word)),

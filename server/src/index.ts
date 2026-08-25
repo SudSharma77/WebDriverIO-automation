@@ -5,6 +5,8 @@ import { batchStore } from "./batch.js";
 import { config } from "./config.js";
 import { cancelAll } from "./orchestrator.js";
 import { registerBatchRoutes } from "./routes/batches.js";
+import { registerClientRoutes } from "./routes/clients.js";
+import { registerReviewRoutes } from "./routes/reviews.js";
 import { registerFrameworkRoutes } from "./routes/framework.js";
 import { registerRunRoutes } from "./routes/runs.js";
 import { store } from "./store.js";
@@ -31,6 +33,8 @@ app.log.info(`starting on port ${config.PORT} (cwd ${process.cwd()})`);
 await registerFrameworkRoutes(app);
 await registerRunRoutes(app);
 await registerBatchRoutes(app);
+await registerClientRoutes(app);
+await registerReviewRoutes(app);
 
 await fs.mkdir(config.artifactDir, { recursive: true });
 await store.hydrate();

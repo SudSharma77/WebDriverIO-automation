@@ -51,10 +51,43 @@ export interface SaveSummary {
     addedElements: string[];
     addedMethods: string[];
     changedLocators: Array<{ property: string; from: string; to: string }>;
+    /** Credential methods on an existing page that predate element-level masking. */
+    unmaskedMethods: string[];
   }>;
   locatorsAdded: string[];
   locatorsChanged: string[];
   reusedExistingSpec: boolean;
+  /** Landed as a new it() inside an already-saved spec, rather than its own file. */
+  addedToExistingSpec: boolean;
+  /** Calls page-object methods rather than raw selectors. */
+  usesPageObjects: boolean;
+  /**
+   * What happened to the business-function layer: flows written, existing ones
+   * reused, or an extraction rolled back because the lifted spec did not
+   * replay.
+   */
+  flow?: {
+    names: string[];
+    applied: boolean;
+    /** Those that already existed; nothing new was written for them. */
+    reused?: string[];
+    /** The lifted spec was replayed and passed. */
+    verified?: boolean;
+    /** New flows that delegate their opening steps to one that already existed. */
+    composedFrom?: Array<{ name: string; steps: number }>;
+    reason?: string;
+  };
+  /**
+   * A run of opening steps this scenario shares with an earlier spec, surfaced
+   * only when nothing was done about it automatically.
+   */
+  flowSuggestion?: { steps: number; sharedWithFile: string; sharedWithTitle: string };
+  /**
+   * Whether this run's changes reached the client's linked repo, if they have
+   * one. `awaitingReview` is the normal outcome: the change is committed
+   * locally and waiting for a person to approve it before it is pushed.
+   */
+  repoSync?: { pushed: boolean; branch: string; error?: string; awaitingReview?: string };
 }
 
 export interface LaneState {
@@ -175,6 +208,22 @@ export interface ServerCapabilities {
   };
 }
 
+export interface RepoLink {
+  url: string;
+  baseBranch: string;
+  tokenEnvVar: string;
+  linkedAt: number;
+  lastSyncedAt?: number;
+  lastSyncError?: string;
+}
+
+export interface ClientRecord {
+  id: string;
+  name: string;
+  createdAt: number;
+  repo?: RepoLink;
+}
+
 export const PLATFORM_LABEL: Record<Platform, string> = {
   web: "Web",
   android: "Android",
@@ -186,3 +235,28 @@ export const PLATFORM_GLYPH: Record<Platform, string> = {
   android: "▲",
   ios: "▮",
 };
+
+export type ReviewStatus = "pending" | "approved" | "rejected" | "pushed";
+
+/**
+ * A change waiting for a person to approve it.
+ *
+ * A passing run is evidence the spec works, not evidence the team wants it —
+ * so nothing reaches a client's repo until someone reads the diff and says so.
+ */
+export interface ReviewRequest {
+  id: string;
+  clientId: string;
+  runId: string;
+  commit: string;
+  prompt: string;
+  title: string;
+  platform: Platform;
+  files: Array<{ path: string; status: string }>;
+  status: ReviewStatus;
+  createdAt: number;
+  reviewer?: string;
+  note?: string;
+  decidedAt?: number;
+  error?: string;
+}

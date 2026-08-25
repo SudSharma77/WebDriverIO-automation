@@ -13,6 +13,7 @@ import {
 } from "./api";
 import { BatchResults } from "./components/BatchResults";
 import { BatchUpload } from "./components/BatchUpload";
+import { Clients } from "./components/Clients";
 import { Composer } from "./components/Composer";
 import { History } from "./components/History";
 import { LaneCard } from "./components/LaneCard";
@@ -21,7 +22,7 @@ import type { LaneStatus, ServerCapabilities } from "./types";
 import { useRun } from "./useRun";
 
 type Theme = "dark" | "light";
-type Mode = "single" | "bulk";
+type Mode = "single" | "bulk" | "history" | "clients";
 
 export default function App() {
   const [capabilities, setCapabilities] = useState<ServerCapabilities | null>(null);
@@ -188,7 +189,7 @@ export default function App() {
 
       <div className="layout">
         <div className="sidebar">
-          <div className="mode-toggle" role="tablist" aria-label="Single or bulk">
+          <div className="mode-toggle" role="tablist" aria-label="Composer mode">
             <button
               type="button"
               role="tab"
@@ -207,9 +208,27 @@ export default function App() {
             >
               Bulk upload
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === "history"}
+              className="mode-toggle__btn"
+              onClick={() => setMode("history")}
+            >
+              History
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === "clients"}
+              className="mode-toggle__btn"
+              onClick={() => setMode("clients")}
+            >
+              Clients
+            </button>
           </div>
 
-          {mode === "single" ? (
+          {mode === "single" && (
             <Composer
               capabilities={capabilities}
               busy={submitting || live}
@@ -218,20 +237,23 @@ export default function App() {
               onCancel={() => run && void cancelRun(run.id)}
               canCancel={live}
             />
-          ) : (
-            <BatchUpload busy={batchSubmitting} issues={issues} onSubmit={submitBatch} />
           )}
-
-          <History
-            activeId={run?.id ?? null}
-            refreshKey={historyRefresh}
-            onSelect={openHistoryRun}
-            onCleared={(removedIds) => {
-              // The stage is showing a run that no longer exists; leaving it up
-              // implies it is still there, and its stream is gone either way.
-              if (run && removedIds.includes(run.id)) reset();
-            }}
-          />
+          {mode === "bulk" && (
+            <BatchUpload capabilities={capabilities} busy={batchSubmitting} issues={issues} onSubmit={submitBatch} />
+          )}
+          {mode === "history" && (
+            <History
+              activeId={run?.id ?? null}
+              refreshKey={historyRefresh}
+              onSelect={openHistoryRun}
+              onCleared={(removedIds) => {
+                // The stage is showing a run that no longer exists; leaving it up
+                // implies it is still there, and its stream is gone either way.
+                if (run && removedIds.includes(run.id)) reset();
+              }}
+            />
+          )}
+          {mode === "clients" && <Clients />}
         </div>
 
         <main className="stage">
@@ -269,11 +291,23 @@ export default function App() {
               <div className="stage-empty__mark" aria-hidden="true">
                 ◍ ▲ ▮
               </div>
-              <h2>{mode === "bulk" ? "Upload test cases to begin" : "Describe a test case to begin"}</h2>
+              <h2>
+                {mode === "bulk"
+                  ? "Upload test cases to begin"
+                  : mode === "history"
+                    ? "Pick a run from the list"
+                    : mode === "clients"
+                      ? "Onboard a client, then link their repo"
+                      : "Describe a test case to begin"}
+              </h2>
               <p>
                 {mode === "bulk"
                   ? "Each line becomes its own run through the exact same pipeline — explored, written, and verified cold, one at a time."
-                  : "The agent opens a real browser and device, works through your scenario, writes a WebdriverIO spec from what it actually saw, then replays that spec in a fresh session to prove it holds up."}
+                  : mode === "history"
+                    ? "Select any past run on the left to see its steps, screenshots and generated spec again."
+                    : mode === "clients"
+                      ? "A client id works fine unlinked — it just saves under clients/<id>/ as it always has. Link a repo to also push generated changes there, on a branch, for review."
+                      : "The agent opens a real browser and device, works through your scenario, writes a WebdriverIO spec from what it actually saw, then replays that spec in a fresh session to prove it holds up."}
               </p>
             </div>
           ) : (

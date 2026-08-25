@@ -1,9 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { config } from "../config.js";
-import { explore } from "../agent/explore.js";
+import { explore, type ExploreResult } from "../agent/explore.js";
 import { skimSite } from "../agent/siteSkim.js";
 import { extendSpec, repairSpec, summarizeFailure, synthesizeSpec } from "../agent/synthesize.js";
-import { clearStaging, openKnowledge, recordSuccess, stagingWorkspace } from "../knowledge/session.js";
+import { getClient, recordSyncResult, requiresReview } from "../knowledge/clients.js";
+import { commitLocally, pushApproved, showCommit, UPDATE_BRANCH } from "../knowledge/git.js";
+import { openReview } from "../knowledge/reviews.js";
+import { sourceExt, type ClientProject } from "../knowledge/project.js";
+import { clearStaging, openKnowledge, recordSuccess, type SaveReport, stagingWorkspace } from "../knowledge/session.js";
 import { slugify } from "../knowledge/structure.js";
 import type { SecretBag } from "./secrets.js";
 import type { VerifyWorkspace } from "../runner/verify.js";
@@ -119,7 +123,8 @@ export async function runLane({ run, platform, signal }: LaneArgs): Promise<void
           platform,
           target: run.target,
         });
-        emit({ type: "lane.saved", platform, report: saved });
+        const repoSync = await syncClientRepo(knowledge.project, run.clientId, platform, knowledge.decision.spec!.title, onLine, runId, run.prompt);
+        emit({ type: "lane.saved", platform, report: { ...saved, repoSync } });
         emit({ type: "lane.phase", platform, phase: "done" });
         emit({
           type: "lane.status",
@@ -203,6 +208,7 @@ export async function runLane({ run, platform, signal }: LaneArgs): Promise<void
       plan,
       transcript: secrets.redact(exploration.transcript),
       recorded,
+      language: knowledge.project.language,
     };
     const synthesized = await synthesizeSpec(synthArgs);
     let spec = synthesized.code;
@@ -212,7 +218,8 @@ export async function runLane({ run, platform, signal }: LaneArgs): Promise<void
     emit({ type: "lane.phase", platform, phase: "verify" });
 
     const title = titleOf(spec) ?? run.prompt.slice(0, 60);
-    const specName = knowledge.decision.spec?.file ?? `${slugify(title)}.${platform}.spec.js`;
+    const specName =
+      knowledge.decision.spec?.file ?? `${slugify(title)}.${platform}.spec${sourceExt(knowledge.project.language)}`;
     // Staged inside the client's project so imports of their page objects
     // resolve exactly as they will once the spec is accepted into the suite.
     const workspace = stagingWorkspace(knowledge.project, specName);
@@ -269,8 +276,19 @@ export async function runLane({ run, platform, signal }: LaneArgs): Promise<void
         prompt: run.prompt,
         platform,
         target: run.target,
+        verifyExtraction: extractionVerifier({
+          runId,
+          clientId: run.clientId,
+          platform,
+          plan,
+          project: knowledge.project,
+          onLine,
+          signal,
+          secrets,
+        }),
       });
-      emit({ type: "lane.saved", platform, report: saved });
+      const repoSync = await syncClientRepo(knowledge.project, run.clientId, platform, title, onLine, runId, run.prompt);
+      emit({ type: "lane.saved", platform, report: { ...saved, repoSync } });
     }
 
     emit({ type: "lane.phase", platform, phase: "done" });
@@ -279,10 +297,7 @@ export async function runLane({ run, platform, signal }: LaneArgs): Promise<void
       platform,
       status: result.passed ? "passed" : "failed",
       detail: result.passed
-        ? (stabilityDetail ??
-          (exploration.exhausted
-            ? "Passed, but the agent hit its tool budget - review that the scenario was fully covered."
-            : undefined))
+        ? (stabilityDetail ?? exhaustionDetail(exploration))
         : (failureSummary ?? result.reason ?? "The generated spec did not pass replay."),
     });
   } catch (err) {
@@ -455,6 +470,7 @@ export async function extendLane({ run, platform, baseLane, additionalPrompt, si
       transcript: exploration.transcript,
       recorded,
       existingCode: baseSpec,
+      language: knowledge.project.language,
     });
     let spec = synthesized.code;
     emit({ type: "lane.usage", platform, usage: synthesized.usage });
@@ -464,7 +480,8 @@ export async function extendLane({ run, platform, baseLane, additionalPrompt, si
     const onLine = (line: string) => emit({ type: "verify.log", platform, line });
 
     const title = titleOf(spec) ?? run.prompt.slice(0, 60);
-    const specName = knowledge.decision.spec?.file ?? `${slugify(title)}.${platform}.spec.js`;
+    const specName =
+      knowledge.decision.spec?.file ?? `${slugify(title)}.${platform}.spec${sourceExt(knowledge.project.language)}`;
     // Staged inside the client's project so imports of their page objects
     // resolve exactly as they will once the spec is accepted into the suite.
     const workspace = stagingWorkspace(knowledge.project, specName);
@@ -483,6 +500,7 @@ export async function extendLane({ run, platform, baseLane, additionalPrompt, si
         plan,
         transcript: exploration.transcript,
         recorded,
+        language: knowledge.project.language,
         spec,
         failure: result.output,
         domSnapshot: result.domSnapshot,
@@ -531,8 +549,19 @@ export async function extendLane({ run, platform, baseLane, additionalPrompt, si
         prompt: run.prompt,
         platform,
         target: run.target,
+        verifyExtraction: extractionVerifier({
+          runId,
+          clientId: run.clientId,
+          platform,
+          plan,
+          project: knowledge.project,
+          onLine,
+          signal,
+          secrets,
+        }),
       });
-      emit({ type: "lane.saved", platform, report: saved });
+      const repoSync = await syncClientRepo(knowledge.project, run.clientId, platform, title, onLine, runId, run.prompt);
+      emit({ type: "lane.saved", platform, report: { ...saved, repoSync } });
     }
 
     emit({ type: "lane.phase", platform, phase: "done" });
@@ -599,4 +628,119 @@ function firstText(content: Array<{ type: string; [k: string]: unknown }>): stri
   const block = content.find((c) => c.type === "text");
   const text = typeof block?.text === "string" ? block.text : "";
   return text.trim() || "no detail returned";
+}
+
+/**
+ * Replay a spec that `recordSuccess` is considering writing.
+ *
+ * Lifting a scenario's steps into a business function splits one file into two
+ * and rewrites its assertions. The spec that arrived has already passed a real
+ * replay; the lifted one has not, and "every saved spec passed a replay" is
+ * the one guarantee this pipeline exists to make — so the lift has to earn its
+ * place. Costs one more browser run per new scenario and no model calls.
+ */
+function extractionVerifier(args: {
+  runId: string;
+  clientId: string;
+  platform: Platform;
+  plan: LanePlan;
+  project: ClientProject;
+  onLine: (line: string) => void;
+  signal: AbortSignal;
+  secrets: SecretBag;
+}): (spec: string, specFile: string) => Promise<boolean> {
+  return async (spec, specFile) => {
+    args.onLine("--- re-checking the spec with its steps lifted into a business function ---");
+    const result = await verify({
+      runId: args.runId,
+      clientId: args.clientId,
+      platform: args.platform,
+      plan: args.plan,
+      spec,
+      onLine: args.onLine,
+      signal: args.signal,
+      secrets: args.secrets,
+      workspace: stagingWorkspace(args.project, specFile),
+    });
+    await clearStaging(args.project);
+    if (!result.passed) args.onLine("--- it did not pass; keeping the original spec and discarding the extraction ---");
+    return result.passed;
+  };
+}
+
+/**
+ * Push whatever `recordSuccess` just wrote to the client's linked repo, if
+ * they have one — best-effort, never thrown. The run this was called after
+ * already passed and is already safely saved locally; a bad token or a
+ * network blip here must show up as a note on the save, not as a failed run.
+ */
+async function syncClientRepo(
+  project: ClientProject,
+  clientId: string,
+  platform: Platform,
+  title: string,
+  onLine: (line: string) => void,
+  runId: string,
+  prompt: string,
+): Promise<SaveReport["repoSync"]> {
+  const client = await getClient(clientId);
+  // No repo linked - the overwhelmingly common case, and not worth a note on
+  // every single save; `repoSync` simply stays absent from the report.
+  if (!client?.repo) return undefined;
+
+  const token = process.env[client.repo.tokenEnvVar];
+  if (!token) {
+    const error = `${client.repo.tokenEnvVar} is not set on this server — could not sync to ${client.repo.url}.`;
+    onLine(`--- ${error} ---`);
+    return { pushed: false, branch: UPDATE_BRANCH, error };
+  }
+
+  // Always commit locally first. That is what gives the reviewer a real diff
+  // to read, and it keeps the working tree clean for the next run whether or
+  // not this change is ever approved.
+  const committed = await commitLocally(project, `${platform}: ${title}`);
+  if (!committed.ok) {
+    onLine(`--- could not commit locally: ${committed.reason} ---`);
+    await recordSyncResult(client.id, { ok: false, reason: committed.reason });
+    return { pushed: false, branch: UPDATE_BRANCH, error: committed.reason };
+  }
+  if (!committed.commit) return { pushed: false, branch: UPDATE_BRANCH }; // Nothing changed.
+
+  if (requiresReview(client.repo)) {
+    const details = await showCommit(project, committed.commit);
+    const review = await openReview(project, {
+      clientId: client.id,
+      runId,
+      commit: committed.commit,
+      prompt,
+      title,
+      platform,
+      files: details?.files ?? [],
+    });
+    onLine(`--- committed locally and opened a review; nothing is pushed until someone approves it ---`);
+    return { pushed: false, branch: UPDATE_BRANCH, awaitingReview: review.id };
+  }
+
+  const result = await pushApproved(project, token, committed.commit, "auto (review disabled for this client)");
+  await recordSyncResult(client.id, result);
+
+  if (!result.ok) {
+    onLine(`--- could not sync to ${client.repo.url}: ${result.reason} ---`);
+    return { pushed: false, branch: UPDATE_BRANCH, error: result.reason };
+  }
+  return { pushed: true, branch: UPDATE_BRANCH };
+}
+
+/**
+ * Surfaced on an otherwise-passing lane whose exploration was cut short —
+ * distinct wording for "ran out of steps" versus "the device stopped
+ * responding", since only one of those points at the same failure recurring
+ * on a re-run.
+ */
+function exhaustionDetail(exploration: ExploreResult): string | undefined {
+  if (!exploration.exhausted) return undefined;
+  if (exploration.exhaustedReason === "unresponsive") {
+    return "Passed on what it managed to verify, but the device stopped responding partway through and exploration ended early - re-run to see if this repeats.";
+  }
+  return "Passed, but the agent hit its tool budget - review that the scenario was fully covered.";
 }

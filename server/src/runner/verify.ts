@@ -56,14 +56,21 @@ export async function verify(args: VerifyArgs): Promise<VerifyResult> {
   const workspace: VerifyWorkspace = args.workspace ?? {
     dir: laneDir(args.clientId, args.runId, args.platform),
     specDir: "test",
-    specName: "generated.e2e.js",
+    specName: "generated.e2e.ts",
   };
 
   const { dir } = workspace;
   await fs.mkdir(path.join(dir, workspace.specDir), { recursive: true });
 
   const specPath = path.join(dir, workspace.specDir, workspace.specName);
-  const confPath = path.join(dir, "wdio.verify.conf.mjs");
+  // Always .ts, whatever language the spec under test is written in.
+  // `@wdio/cli`'s launcher registers tsx for its own process only when the
+  // config file it was handed is TypeScript, and that registration is what
+  // lets a TypeScript spec — or a JavaScript one importing the TypeScript
+  // runtime — resolve at all. tsx passes plain JavaScript through untouched,
+  // so there is no cost to a JavaScript client, and this way verification
+  // never depends on getting a conditional right.
+  const confPath = path.join(dir, VERIFY_CONFIG);
 
   await fs.writeFile(specPath, args.spec, "utf8");
   // Scoped to this one file: the client's project may hold hundreds of specs,
@@ -102,7 +109,7 @@ export async function verify(args: VerifyArgs): Promise<VerifyResult> {
     // shim: since CVE-2024-27980, Node refuses to spawn a .cmd without a
     // shell, and turning the shell on to work around that would put
     // user-supplied paths through cmd.exe quoting. This sidesteps both.
-    const child = spawn(process.execPath, [cli, "run", "./wdio.verify.conf.mjs"], {
+    const child = spawn(process.execPath, [cli, "run", `./${VERIFY_CONFIG}`], {
       cwd: dir,
       // Least privilege: the runner gets a PATH, a temp dir and the SDK vars it
       // needs - never ANTHROPIC_API_KEY. The run's own credentials are added on
@@ -168,6 +175,9 @@ export async function verify(args: VerifyArgs): Promise<VerifyResult> {
 
 /** Relative to the lane dir - matches the afterTest hook in renderConfig. */
 const FAILURE_DIR = "failure-artifacts";
+
+/** The ephemeral config verify writes and runs. TypeScript so the launcher registers tsx. */
+const VERIFY_CONFIG = "wdio.verify.conf.ts";
 
 /**
  * Best-effort read of the page source the afterTest hook wrote on failure.

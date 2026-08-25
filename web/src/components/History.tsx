@@ -14,6 +14,11 @@ interface Props {
 /**
  * Past runs, newest first. Backed by the server's persisted-run store, so
  * this survives a page reload the way the rest of the app now does too.
+ *
+ * Its own sidebar tab rather than a strip docked under the composer: a run
+ * list wants room to breathe (full prompts, comfortable row height, a Clear
+ * control that isn't touching the compose button), and a fixed-height strip
+ * squeezed between two other panels couldn't give it that.
  */
 export function History({ activeId, refreshKey, onSelect, onCleared }: Props) {
   const [runs, setRuns] = useState<RunSummary[] | null>(null);
@@ -75,34 +80,27 @@ export function History({ activeId, refreshKey, onSelect, onCleared }: Props) {
     [load, onCleared],
   );
 
-  if (!runs || runs.length === 0) {
-    return note ? (
-      <section className="history" aria-label="Run history">
-        <p className="history__note" role="status">
-          {note}
-        </p>
-      </section>
-    ) : null;
-  }
+  const hasRuns = !!runs && runs.length > 0;
 
   return (
     <section className="history" aria-label="Run history">
       <div className="history__head">
-        <h3 className="history__title">History</h3>
-        {confirming ? (
-          <span className="history__confirm">
-            <button className="btn btn--danger" type="button" onClick={clearAll} disabled={busy} autoFocus>
-              {busy ? "Clearing…" : `Clear ${runs.length}`}
+        <h3 className="history__title">History{hasRuns ? ` · ${runs!.length}` : ""}</h3>
+        {hasRuns &&
+          (confirming ? (
+            <span className="history__confirm">
+              <button className="btn btn--danger" type="button" onClick={clearAll} disabled={busy} autoFocus>
+                {busy ? "Clearing…" : `Clear ${runs!.length}`}
+              </button>
+              <button className="btn btn--ghost" type="button" onClick={() => setConfirming(false)} disabled={busy}>
+                Cancel
+              </button>
+            </span>
+          ) : (
+            <button className="btn btn--ghost history__clear" type="button" onClick={() => setConfirming(true)}>
+              Clear
             </button>
-            <button className="btn btn--ghost" type="button" onClick={() => setConfirming(false)} disabled={busy}>
-              Cancel
-            </button>
-          </span>
-        ) : (
-          <button className="btn btn--ghost history__clear" type="button" onClick={() => setConfirming(true)}>
-            Clear
-          </button>
-        )}
+          ))}
       </div>
 
       {confirming && (
@@ -116,37 +114,45 @@ export function History({ activeId, refreshKey, onSelect, onCleared }: Props) {
         </p>
       )}
 
-      <ul className="history__list">
-        {runs.map((run) => (
-          <li key={run.id} className="history__row">
-            <button
-              type="button"
-              className="history__item"
-              data-active={run.id === activeId || undefined}
-              onClick={() => onSelect(run.id)}
-            >
-              <span className="history__glyphs" aria-hidden="true">
-                {run.platforms.map((p) => (
-                  <span key={p} data-status={run.statuses[p]}>
-                    {PLATFORM_GLYPH[p]}
-                  </span>
-                ))}
-              </span>
-              <span className="history__prompt">{run.prompt}</span>
-              <span className="history__time">{new Date(run.createdAt).toLocaleTimeString()}</span>
-            </button>
-            <button
-              type="button"
-              className="history__remove"
-              onClick={() => remove(run.id)}
-              aria-label={`Remove run: ${run.prompt.slice(0, 60)}`}
-              title="Remove this run"
-            >
-              ×
-            </button>
-          </li>
-        ))}
-      </ul>
+      {hasRuns ? (
+        <ul className="history__list">
+          {runs!.map((run) => (
+            <li key={run.id} className="history__row">
+              <button
+                type="button"
+                className="history__item"
+                data-active={run.id === activeId || undefined}
+                onClick={() => onSelect(run.id)}
+              >
+                <span className="history__glyphs" aria-hidden="true">
+                  {run.platforms.map((p) => (
+                    <span key={p} data-status={run.statuses[p]}>
+                      {PLATFORM_GLYPH[p]}
+                    </span>
+                  ))}
+                </span>
+                <span className="history__prompt">{run.prompt}</span>
+                <span className="history__time">{new Date(run.createdAt).toLocaleTimeString()}</span>
+              </button>
+              <button
+                type="button"
+                className="history__remove"
+                onClick={() => remove(run.id)}
+                aria-label={`Remove run: ${run.prompt.slice(0, 60)}`}
+                title="Remove this run"
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        !note && (
+          <p className="history__note" role="status">
+            No runs yet — they'll show up here once you run a test case.
+          </p>
+        )
+      )}
     </section>
   );
 }

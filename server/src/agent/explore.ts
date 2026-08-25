@@ -22,8 +22,10 @@ export interface ExploreResult {
   transcript: string;
   /** The agent's closing summary. */
   finalText: string;
-  /** True when the agent ran out of budget rather than finishing. */
+  /** True when the agent stopped without the model reporting it was done. */
   exhausted: boolean;
+  /** Why `exhausted` is true — shapes the message a human sees on the run. */
+  exhaustedReason?: "budget" | "unresponsive";
   usage: TokenUsage;
 }
 
@@ -51,6 +53,20 @@ export interface ExploreArgs {
  * conversation mid-flight (device minutes are metered), MCP tool schemas
  * discovered at runtime, and the same shape across two different provider APIs.
  */
+/**
+ * Consecutive tool-call failures before the loop gives up on the device
+ * rather than the budget.
+ *
+ * A page that is merely slow recovers within a call or two; a session that is
+ * genuinely stuck (a hung redirect, a blocking native dialog, a lost
+ * connection) does not recover on its own, and every retry after the first
+ * one or two is spending budget to learn the same thing again. Observed in
+ * practice: 6 straight timeouts — read tree, screenshot, read tree,
+ * screenshot, navigate, screenshot — burned the rest of a run's budget
+ * without ever producing another usable observation.
+ */
+const STUCK_AFTER_FAILURES = 3;
+
 export async function explore(args: ExploreArgs): Promise<ExploreResult> {
   const { mcp, tools, mcpTools, prompt, platform, plan, budget, emit, signal, secrets, siteSkim } = args;
   const toolByName = new Map(mcpTools.map((t) => [t.name, t]));
@@ -60,12 +76,14 @@ export async function explore(args: ExploreArgs): Promise<ExploreResult> {
     tools,
     maxTokens: config.EXPLORE_MAX_OUTPUT_TOKENS,
     sendImages: config.llm.sendScreenshots,
+    requestBudgetTokens: config.llm.requestBudgetTokens,
   });
 
   const transcript: string[] = [];
   let next: string | LlmToolResult[] = explorerTask(prompt, platform, plan, secrets, siteSkim);
   let toolCalls = 0;
   let usage = emptyUsage();
+  let consecutiveFailures = 0;
 
   for (;;) {
     signal.throwIfAborted();
@@ -80,7 +98,13 @@ export async function explore(args: ExploreArgs): Promise<ExploreResult> {
       if (closing.text) emit.text(closing.text);
       transcript.push(`\n[budget exhausted after ${budget} tool calls]`);
       if (closing.text) transcript.push(`\nAgent summary:\n${closing.text}`);
-      return { transcript: transcript.join("\n"), finalText: closing.text, exhausted: true, usage };
+      return {
+        transcript: transcript.join("\n"),
+        finalText: closing.text,
+        exhausted: true,
+        exhaustedReason: "budget",
+        usage,
+      };
     }
 
     const turn = await send(conversation, next);
@@ -118,7 +142,7 @@ export async function explore(args: ExploreArgs): Promise<ExploreResult> {
       // keeps the placeholder the model wrote, so the recorded step and the
       // transcript below show `{{PASSWORD}}` rather than the password.
       const raw = await mcp.callTool(call.name, secrets.fill(input));
-      const converted = redactResult(convertToolResult(raw), secrets);
+      const converted = redactResult(convertToolResult(raw, config.llm.maxToolResultChars), secrets);
 
       // Screenshots always reach the UI; whether they also reach the model is a
       // cost decision made in config.
@@ -131,6 +155,8 @@ export async function explore(args: ExploreArgs): Promise<ExploreResult> {
         `${raw.isError ? "x" : "+"} ${call.name}(${compactJson(input)}) -> ${converted.summary}`,
       );
 
+      consecutiveFailures = raw.isError ? consecutiveFailures + 1 : 0;
+
       results.push({
         id: call.id,
         name: call.name,
@@ -138,6 +164,24 @@ export async function explore(args: ExploreArgs): Promise<ExploreResult> {
         images: converted.images,
         isError: raw.isError,
       });
+    }
+
+    if (consecutiveFailures >= STUCK_AFTER_FAILURES) {
+      const closing = await send(
+        conversation,
+        `The last ${consecutiveFailures} device commands in a row failed or timed out. This looks like the session is stuck — a hung redirect, a blocking dialog, or a lost connection — not merely a slow page, since retrying different kinds of commands has not recovered it. Stop exploring now and write your final summary: what you completed before the device stopped responding.`,
+      );
+      usage = addUsage(usage, closing.usage);
+      if (closing.text) emit.text(closing.text);
+      transcript.push(`\n[device stopped responding after ${consecutiveFailures} consecutive failed commands]`);
+      if (closing.text) transcript.push(`\nAgent summary:\n${closing.text}`);
+      return {
+        transcript: transcript.join("\n"),
+        finalText: closing.text,
+        exhausted: true,
+        exhaustedReason: "unresponsive",
+        usage,
+      };
     }
 
     next = results;

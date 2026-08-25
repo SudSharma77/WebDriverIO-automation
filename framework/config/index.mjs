@@ -6,7 +6,27 @@
  * identically when they run it themselves. That equivalence is the point: a
  * green result is only meaningful if it was produced by the same setup the
  * client will use.
+ *
+ * Stays plain ESM while the runtime next door is TypeScript, and the asymmetry
+ * is load-bearing rather than an oversight. This module is imported by the
+ * WebdriverIO *launcher*, which registers tsx for itself only when the config
+ * file it was handed is TypeScript (`@wdio/cli` Launcher.initialize). A client
+ * whose project predates TypeScript output still has a `wdio.*.config.mjs`, so
+ * a `.ts` module here would fail their launcher with ERR_UNKNOWN_FILE_EXTENSION
+ * on any Node without type stripping. The runtime has no such constraint: it is
+ * only ever imported by specs, which run in a worker where tsx is always
+ * registered. Types live in index.d.ts alongside.
  */
+
+/**
+ * Where specs live, by default.
+ *
+ * One constant rather than the same literal repeated in every factory: this is
+ * the string that decides whether the runner finds a suite at all, so the
+ * platforms must not be able to disagree about it. Covers both extensions
+ * because a project is either TypeScript or JavaScript, never both.
+ */
+export const DEFAULT_SPECS = ["./test/**/*.ts", "./test/**/*.js"];
 
 /** Everything platform-independent. */
 export function baseConfig(overrides = {}) {
@@ -43,7 +63,7 @@ export function baseConfig(overrides = {}) {
   };
 }
 
-export function webConfig({ headless = true, specs = ["./test/**/*.js"], ...rest } = {}) {
+export function webConfig({ headless = true, specs = DEFAULT_SPECS, ...rest } = {}) {
   return baseConfig({
     specs,
     capabilities: [
@@ -65,7 +85,7 @@ export function webConfig({ headless = true, specs = ["./test/**/*.js"], ...rest
 export function androidConfig({ app, deviceName = "Android Emulator", appiumUrl, specs, ...rest } = {}) {
   const endpoint = parseEndpoint(appiumUrl ?? "http://127.0.0.1:4723");
   return baseConfig({
-    specs: specs ?? ["./test/**/*.js"],
+    specs: specs ?? DEFAULT_SPECS,
     ...endpoint,
     capabilities: [
       {
@@ -83,7 +103,7 @@ export function androidConfig({ app, deviceName = "Android Emulator", appiumUrl,
 
 export function iosConfig({ app, deviceName = "iPhone 15 Pro", platformVersion = "17", hub, vendor, specs, ...rest } = {}) {
   return baseConfig({
-    specs: specs ?? ["./test/**/*.js"],
+    specs: specs ?? DEFAULT_SPECS,
     ...(hub ?? {}),
     capabilities: [
       {

@@ -10,6 +10,7 @@ import type {
   TokenUsage,
 } from "./types.js";
 import { emptyUsage } from "./types.js";
+import { estimateTokens, trimHistory } from "./budget.js";
 
 export interface OpenAiCompatibleOptions {
   /** "groq", "openai", "ollama", … — surfaced in logs and errors. */
@@ -19,6 +20,13 @@ export interface OpenAiCompatibleOptions {
   model: string;
   supportsVision: boolean;
   maxRetries: number;
+  /**
+   * Which field caps the response. OpenAI deprecated `max_tokens` in favour of
+   * `max_completion_tokens` and its reasoning models reject the old name, but
+   * some compatibility layers (Google's among them) only document the old one.
+   * Sending the wrong one is either a 400 or, worse, a silently ignored cap.
+   */
+  tokenParam?: "max_tokens" | "max_completion_tokens";
 }
 
 /**
@@ -43,15 +51,22 @@ export function createOpenAiCompatibleProvider(opts: OpenAiCompatibleOptions): L
     maxRetries: opts.maxRetries,
   });
 
+  /** The response cap, under whichever field name this endpoint accepts. */
+  const cap = (n: number) =>
+    opts.tokenParam === "max_tokens" ? { max_tokens: n } : { max_completion_tokens: n };
+
   const provider: LlmProvider = {
     id: opts.id,
     model: opts.model,
     supportsVision: opts.supportsVision,
 
-    startConversation({ system, tools, maxTokens, sendImages }) {
+    startConversation({ system, tools, maxTokens, sendImages, requestBudgetTokens = 0 }) {
       const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [{ role: "system", content: system }];
       const toolDefs = tools.map(toOpenAiTool);
       const withImages = sendImages && opts.supportsVision;
+      // Fixed cost re-billed on every turn: the schemas plus whatever output we
+      // reserve. Only history can be shed, so it is measured against this.
+      const overhead = estimateTokens(toolDefs) + maxTokens;
 
       const conversation: LlmConversation = {
         async send(input) {
@@ -80,9 +95,20 @@ export function createOpenAiCompatibleProvider(opts: OpenAiCompatibleOptions): L
             }
           }
 
+          // Index 0 is the system prompt and index 1 the opening task; both are
+          // pinned. Groups begin at each assistant message, so an assistant
+          // turn and the `role: "tool"` messages answering it always leave
+          // together — the API rejects a tool message whose call is gone.
+          trimHistory(messages, {
+            overhead,
+            budget: requestBudgetTokens,
+            pinned: 2,
+            startsGroup: (m) => m.role === "assistant",
+          });
+
           const response = await client.chat.completions.create({
             model: opts.model,
-            max_completion_tokens: maxTokens,
+            ...cap(maxTokens),
             messages,
             tools: toolDefs,
           });
@@ -104,7 +130,7 @@ export function createOpenAiCompatibleProvider(opts: OpenAiCompatibleOptions): L
     async complete({ system, turns, maxTokens, json }) {
       const response = await client.chat.completions.create({
         model: opts.model,
-        max_completion_tokens: maxTokens,
+        ...cap(maxTokens),
         ...(json ? { response_format: { type: "json_object" as const } } : {}),
         messages: [
           { role: "system", content: system },
@@ -128,7 +154,7 @@ export function createOpenAiCompatibleProvider(opts: OpenAiCompatibleOptions): L
       // request can be "too large" while the prompt itself is small. Say which
       // knob fixes it rather than echoing a raw 413.
       if (err instanceof OpenAI.APIError && err.status === 413) {
-        return `${opts.id} rejected the request as too large for its per-minute token limit. Lower EXPLORE_MAX_OUTPUT_TOKENS (the reserved output counts toward the limit), set SEND_SCREENSHOTS_TO_MODEL=false, or pick a model with a higher cap. Provider said: ${err.message}`;
+        return `${opts.id} rejected the request as too large for its per-minute token limit. Set LLM_TPM_LIMIT in .env to the limit the message below quotes — history is then trimmed to fit automatically. If it persists, lower MAX_TOOL_RESULT_CHARS (a single page read can be thousands of tokens) or EXPLORE_MAX_OUTPUT_TOKENS. Provider said: ${err.message}`;
       }
       if (err instanceof OpenAI.BadRequestError) {
         return `${opts.id} rejected the request: ${err.message}`;
