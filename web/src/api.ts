@@ -163,20 +163,28 @@ export async function fetchClients(): Promise<ClientRecord[]> {
   return clients;
 }
 
-export async function onboardClient(id: string, name: string): Promise<ClientRecord> {
-  const res = await fetch("/api/clients", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ id, name }),
-  });
-  const { client } = await parse<{ client: ClientRecord }>(res);
-  return client;
-}
-
 export interface LinkRepoBody {
   url: string;
   baseBranch: string;
   tokenEnvVar: string;
+}
+
+/**
+ * Onboarding always produces a project on disk under `clients/<id>/`. The repo
+ * is optional, and its failure is reported rather than thrown: a client whose
+ * repo URL had a typo is still onboarded, and can link one from its own form.
+ */
+export async function onboardClient(
+  id: string,
+  name: string,
+  repo?: LinkRepoBody,
+): Promise<{ client: ClientRecord; repoError?: string }> {
+  const res = await fetch("/api/clients", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id, name, repo }),
+  });
+  return parse<{ client: ClientRecord; repoError?: string }>(res);
 }
 
 /** The server proves the URL and token work (a real `git ls-remote`) before this resolves. */

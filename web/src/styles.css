@@ -559,6 +559,16 @@ body {
   margin-top: var(--space-2);
 }
 
+/* Marks a field as skippable without shouting it, so the eye reaches the
+   required ones first. Lowercase against the uppercase label it sits in. */
+.field__optional {
+  margin-left: var(--space-2);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-faint);
+}
+
 .field__error {
   font-size: 12px;
   color: var(--fail);

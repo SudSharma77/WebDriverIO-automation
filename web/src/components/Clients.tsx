@@ -44,8 +44,12 @@ export function Clients() {
       )}
 
       <OnboardForm
-        onOnboarded={(client) => {
-          setNote(null);
+        onOnboarded={(client, repoError) => {
+          setNote(
+            repoError
+              ? `${client.name} is onboarded and its framework is on disk, but the repo could not be linked: ${repoError} — link it below once that's sorted.`
+              : null,
+          );
           setClients((prev) => {
             const rest = (prev ?? []).filter((c) => c.id !== client.id);
             return [...rest, client].sort((a, b) => a.name.localeCompare(b.name));
@@ -112,27 +116,50 @@ function repoLabel(client: ClientRecord): string {
   return "linked";
 }
 
-function OnboardForm({ onOnboarded }: { onOnboarded: (client: ClientRecord) => void }) {
-  const ids = { id: useId(), name: useId() };
+/**
+ * Onboarding, with the repo as an optional extra rather than a second step.
+ *
+ * The repo fields are progressively disclosed: a URL is the one decision worth
+ * putting in front of everyone, and the branch and token only matter once
+ * there is a URL to apply them to. Leaving it blank is a first-class choice —
+ * the client still gets a complete project, it just lives only on this server.
+ */
+function OnboardForm({ onOnboarded }: { onOnboarded: (client: ClientRecord, repoError?: string) => void }) {
+  const ids = { id: useId(), name: useId(), url: useId(), branch: useId(), tokenVar: useId() };
   const [id, setId] = useState("");
   const [name, setName] = useState("");
+  const [url, setUrl] = useState("");
+  const [baseBranch, setBaseBranch] = useState("main");
+  const [tokenEnvVar, setTokenEnvVar] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const suggestedVar = id.trim() ? `TESTLAB_REPO_TOKEN_${id.trim().toUpperCase().replace(/-/g, "_")}` : "TESTLAB_REPO_TOKEN";
+  const linking = url.trim().length > 0;
 
   const submit = useCallback(async () => {
     setBusy(true);
     setError(null);
     try {
-      const client = await onboardClient(id.trim(), name.trim() || id.trim());
-      onOnboarded(client);
+      const { client, repoError } = await onboardClient(
+        id.trim(),
+        name.trim() || id.trim(),
+        url.trim()
+          ? { url: url.trim(), baseBranch: baseBranch.trim() || "main", tokenEnvVar: tokenEnvVar.trim() || suggestedVar }
+          : undefined,
+      );
+      onOnboarded(client, repoError);
       setId("");
       setName("");
+      setUrl("");
+      setBaseBranch("main");
+      setTokenEnvVar("");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not onboard that client.");
     } finally {
       setBusy(false);
     }
-  }, [id, name, onOnboarded]);
+  }, [baseBranch, id, name, onOnboarded, suggestedVar, tokenEnvVar, url]);
 
   return (
     <form
@@ -171,9 +198,70 @@ function OnboardForm({ onOnboarded }: { onOnboarded: (client: ClientRecord) => v
           disabled={busy}
         />
       </div>
+
+      <div className="field">
+        <label className="field__label" htmlFor={ids.url}>
+          Repo URL <span className="field__optional">optional</span>
+        </label>
+        <input
+          id={ids.url}
+          className="input"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          placeholder="https://github.com/acme/qa-suite.git"
+          spellCheck={false}
+          disabled={busy}
+        />
+        <p className="field__hint">
+          {linking
+            ? "An empty, freshly created repo is fine — the framework becomes its first commit. An existing repo is left alone; generated files land alongside what's already there."
+            : "Leave blank to keep this client on this server only. Either way you get a real WebdriverIO project under clients/ that you can run yourself — a repo just decides whether changes are also pushed somewhere."}
+        </p>
+      </div>
+
+      {linking && (
+        <>
+          <div className="field">
+            <label className="field__label" htmlFor={ids.branch}>
+              Base branch
+            </label>
+            <input
+              id={ids.branch}
+              className="input"
+              value={baseBranch}
+              onChange={(e) => setBaseBranch(e.target.value)}
+              spellCheck={false}
+              disabled={busy}
+            />
+            <p className="field__hint">
+              What the <code>testlab-updates</code> branch forks from. Ignored if the repo has no history yet.
+            </p>
+          </div>
+          <div className="field">
+            <label className="field__label" htmlFor={ids.tokenVar}>
+              Access-token env var
+            </label>
+            <input
+              id={ids.tokenVar}
+              className="input"
+              value={tokenEnvVar}
+              onChange={(e) => setTokenEnvVar(e.target.value.toUpperCase())}
+              placeholder={suggestedVar}
+              spellCheck={false}
+              disabled={busy}
+            />
+            <p className="field__hint">
+              Not the token — the name of an env var on this server holding it. Set{" "}
+              <code>{tokenEnvVar || suggestedVar}</code> before onboarding, or leave the URL blank and link the repo
+              later.
+            </p>
+          </div>
+        </>
+      )}
+
       {error && <p className="field__error">{error}</p>}
       <button className="btn" type="submit" disabled={busy || !id.trim()}>
-        {busy ? "Onboarding…" : "Onboard client"}
+        {busy ? "Onboarding…" : linking ? "Onboard and link repo" : "Onboard client"}
       </button>
     </form>
   );

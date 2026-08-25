@@ -75,6 +75,27 @@ describe("linkRepo", () => {
     assert.deepEqual(result, { ok: true });
   });
 
+  // Why onboarding links *before* it scaffolds. Checking out the client's real
+  // default branch cannot overwrite untracked files, so a project scaffolded
+  // first can never be linked to a repo that already has a README, a
+  // package.json or a config of its own - which is most real repos. Linking
+  // first also lets `writeIfAbsent` see the repo's own files and leave them be.
+  it("cannot check out a branch over files scaffolded before the link", async () => {
+    const remote = await bareRemote();
+    const seed = await tmpDir("testlab-seed-");
+    await run("git", ["init", "-b", "main", seed]);
+    await fs.writeFile(path.join(seed, "README.md"), "# The client's own README\n", "utf8");
+    await run("git", ["-C", seed, "add", "-A"]);
+    await run("git", ["-C", seed, "-c", "user.email=a@b.c", "-c", "user.name=seed", "commit", "-m", "seed"]);
+    await run("git", ["-C", seed, "push", remote, "main"]);
+
+    const projectRoot = await tmpDir("testlab-project-");
+    await fs.writeFile(path.join(projectRoot, "README.md"), "# scaffolded too early\n", "utf8");
+
+    const result = await linkRepo(projectAt(projectRoot), { url: remote, baseBranch: "main" }, "unused-token");
+    assert.equal(result.ok, false, "scaffolding before linking no longer conflicts - check the onboarding order");
+  });
+
   it("reports failure rather than throwing when the remote doesn't exist", async () => {
     const projectRoot = await tmpDir("testlab-project-");
     const project = projectAt(projectRoot);
