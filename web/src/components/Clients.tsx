@@ -104,6 +104,13 @@ export function Clients() {
   );
 }
 
+/** ApiError's message is a generic wrapper when there are field-level issues; the
+ *  useful part is in `issues`, which these forms otherwise had no UI for. */
+function issueMessage(err: ApiError): string {
+  if (!err.issues.length) return err.message;
+  return err.issues.map((i) => (i.path ? `${i.path}: ${i.message}` : i.message)).join(" · ");
+}
+
 function repoTone(client: ClientRecord): "ok" | "warn" | undefined {
   if (!client.repo) return undefined;
   return client.repo.lastSyncError ? "warn" : "ok";
@@ -155,7 +162,7 @@ function OnboardForm({ onOnboarded }: { onOnboarded: (client: ClientRecord, repo
       setBaseBranch("main");
       setTokenEnvVar("");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not onboard that client.");
+      setError(err instanceof ApiError ? issueMessage(err) : "Could not onboard that client.");
     } finally {
       setBusy(false);
     }
@@ -283,7 +290,7 @@ function RepoForm({ client, onLinked }: { client: ClientRecord; onLinked: (clien
       const updated = await linkClientRepo(client.id, { url: url.trim(), baseBranch: baseBranch.trim(), tokenEnvVar: tokenEnvVar.trim() });
       onLinked(updated);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not link that repo.");
+      setError(err instanceof ApiError ? issueMessage(err) : "Could not link that repo.");
     } finally {
       setBusy(false);
     }

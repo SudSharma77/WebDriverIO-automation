@@ -2,8 +2,9 @@ import { config } from "../config.js";
 import { bindSecretsInSpec, unbindSecretsInSpec } from "../lanes/secrets.js";
 import { digestDom } from "./domDigest.js";
 import { lintSpec } from "./lint.js";
-import { llm, llmFallback } from "./llm/index.js";
-import type { CompleteTurn, TokenUsage } from "./llm/types.js";
+import { shrinkTranscript } from "./llm/budget.js";
+import { llm, llmFallback, llmSecondary } from "./llm/index.js";
+import type { CompleteTurn, LlmProvider, TokenUsage } from "./llm/types.js";
 import { addUsage, emptyUsage } from "./llm/types.js";
 import {
   EXTEND_SCAFFOLD_SYSTEM,
@@ -29,6 +30,10 @@ export interface SynthArgs {
   recorded: string | null;
   /** What the client's project is written in. Decides the file asked for and the fence. */
   language?: ProjectLanguage;
+  /** Told about each timeout-triggered retry, so the run log isn't silent about why it's slow. */
+  onRetry?: (note: string) => void;
+  /** Set internally by withTimeoutRetry once it falls back to the secondary provider. */
+  provider?: LlmProvider;
 }
 
 /**
@@ -37,15 +42,29 @@ export interface SynthArgs {
  * paragraph-long one produce equally structured specs — the plan step is the
  * same fixed template either way, rather than the code model free-associating
  * structure straight out of a possibly-terse transcript.
+ *
+ * Wrapped in a timeout retry (see withTimeoutRetry below): a gateway that
+ * times out on this call but not on explore's much smaller ones may simply be
+ * unable to answer in time at this size, regardless of how small it already
+ * is — cutting the transcript further and trying again costs one more call,
+ * not the whole run.
  */
 export async function synthesizeSpec(args: SynthArgs): Promise<{ code: string; usage: TokenUsage }> {
+  return withTimeoutRetry("synthesize", args, synthesizeSpecOnce);
+}
+
+async function synthesizeSpecOnce(args: SynthArgs): Promise<{ code: string; usage: TokenUsage }> {
   let usage = emptyUsage();
 
   const scaffoldResult = await generateScaffold(args);
   usage = addUsage(usage, scaffoldResult.usage);
   const scaffold = scaffoldResult.scaffold;
 
-  const first = await complete(synthSystem(args.language), [{ role: "user", text: synthTask({ ...args, scaffold }) }]);
+  const first = await complete(
+    synthSystem(args.language),
+    [{ role: "user", text: synthTask({ ...args, scaffold }) }],
+    args.provider,
+  );
   usage = addUsage(usage, first.usage);
   let code = guardSpec(extractCode(first.text));
 
@@ -76,6 +95,10 @@ export interface ExtendArgs {
   /** The base run's full spec, including its scaffold header. */
   existingCode: string;
   language?: ProjectLanguage;
+  /** Told about each timeout-triggered retry, so the run log isn't silent about why it's slow. */
+  onRetry?: (note: string) => void;
+  /** Set internally by withTimeoutRetry once it falls back to the secondary provider. */
+  provider?: LlmProvider;
 }
 
 /**
@@ -86,6 +109,10 @@ export interface ExtendArgs {
  * re-derive or re-emit reasoning about.
  */
 export async function extendSpec(args: ExtendArgs): Promise<{ code: string; usage: TokenUsage }> {
+  return withTimeoutRetry("extend", args, extendSpecOnce);
+}
+
+async function extendSpecOnce(args: ExtendArgs): Promise<{ code: string; usage: TokenUsage }> {
   let usage = emptyUsage();
 
   const originalScaffold = extractScaffoldHeader(args.existingCode);
@@ -97,18 +124,22 @@ export async function extendSpec(args: ExtendArgs): Promise<{ code: string; usag
   // `process.env.…` forward and guardSpec rejects its own output.
   const existingCode = unbindSecretsInSpec(stripScaffoldHeader(args.existingCode));
 
-  const scaffoldDelta = await complete(EXTEND_SCAFFOLD_SYSTEM, [
-    { role: "user", text: extendScaffoldTask({ ...args, originalScaffold }) },
-  ]);
+  const scaffoldDelta = await complete(
+    EXTEND_SCAFFOLD_SYSTEM,
+    [{ role: "user", text: extendScaffoldTask({ ...args, originalScaffold }) }],
+    args.provider,
+  );
   usage = addUsage(usage, scaffoldDelta.usage);
   const newSteps = scaffoldDelta.text.trim();
   if (!newSteps) throw new Error("The model returned no additional plan steps.");
 
   const mergedScaffold = `${originalScaffold}\n${newSteps}`;
 
-  const first = await complete(synthSystem(args.language), [
-    { role: "user", text: extendSynthTask({ ...args, mergedScaffold, existingCode }) },
-  ]);
+  const first = await complete(
+    synthSystem(args.language),
+    [{ role: "user", text: extendSynthTask({ ...args, mergedScaffold, existingCode }) }],
+    args.provider,
+  );
   usage = addUsage(usage, first.usage);
   let code = guardSpec(extractCode(first.text));
 
@@ -125,20 +156,24 @@ export async function extendSpec(args: ExtendArgs): Promise<{ code: string; usag
 async function fixExtendLintIssues(
   args: ExtendArgs & { mergedScaffold: string; existingCode: string; spec: string; issues: string[] },
 ): Promise<{ code: string; usage: TokenUsage }> {
-  const result = await complete(synthSystem(args.language), [
-    { role: "user", text: extendSynthTask(args) },
-    { role: "assistant", text: "```" + fenceFor(args.language ?? "js") + "\n" + args.spec + "\n```" },
-    {
-      role: "user",
-      text: [
-        "A deterministic lint pass (eslint-plugin-wdio) found real issues in that file:",
-        "",
-        args.issues.map((i) => `- ${i}`).join("\n"),
-        "",
-        `Fix ONLY these issues — do not change the plan, the selectors, or the assertions otherwise. Emit the corrected full file in one \`\`\`${fenceFor(args.language ?? "js")} block, nothing else.`,
-      ].join("\n"),
-    },
-  ]);
+  const result = await complete(
+    synthSystem(args.language),
+    [
+      { role: "user", text: extendSynthTask(args) },
+      { role: "assistant", text: "```" + fenceFor(args.language ?? "js") + "\n" + args.spec + "\n```" },
+      {
+        role: "user",
+        text: [
+          "A deterministic lint pass (eslint-plugin-wdio) found real issues in that file:",
+          "",
+          args.issues.map((i) => `- ${i}`).join("\n"),
+          "",
+          `Fix ONLY these issues — do not change the plan, the selectors, or the assertions otherwise. Emit the corrected full file in one \`\`\`${fenceFor(args.language ?? "js")} block, nothing else.`,
+        ].join("\n"),
+      },
+    ],
+    args.provider,
+  );
   return { code: guardSpec(extractCode(result.text)), usage: result.usage };
 }
 
@@ -149,25 +184,29 @@ function stripScaffoldHeader(code: string): string {
 async function fixLintIssues(
   args: SynthArgs & { spec: string; scaffold: string; issues: string[] },
 ): Promise<{ code: string; usage: TokenUsage }> {
-  const result = await complete(synthSystem(args.language), [
-    { role: "user", text: synthTask(args) },
-    { role: "assistant", text: "```" + fenceFor(args.language ?? "js") + "\n" + args.spec + "\n```" },
-    {
-      role: "user",
-      text: [
-        "A deterministic lint pass (eslint-plugin-wdio) found real issues in that file:",
-        "",
-        args.issues.map((i) => `- ${i}`).join("\n"),
-        "",
-        `Fix ONLY these issues — do not change the plan, the selectors, or the assertions otherwise. Emit the corrected full file in one \`\`\`${fenceFor(args.language ?? "js")} block, nothing else.`,
-      ].join("\n"),
-    },
-  ]);
+  const result = await complete(
+    synthSystem(args.language),
+    [
+      { role: "user", text: synthTask(args) },
+      { role: "assistant", text: "```" + fenceFor(args.language ?? "js") + "\n" + args.spec + "\n```" },
+      {
+        role: "user",
+        text: [
+          "A deterministic lint pass (eslint-plugin-wdio) found real issues in that file:",
+          "",
+          args.issues.map((i) => `- ${i}`).join("\n"),
+          "",
+          `Fix ONLY these issues — do not change the plan, the selectors, or the assertions otherwise. Emit the corrected full file in one \`\`\`${fenceFor(args.language ?? "js")} block, nothing else.`,
+        ].join("\n"),
+      },
+    ],
+    args.provider,
+  );
   return { code: guardSpec(extractCode(result.text)), usage: result.usage };
 }
 
 async function generateScaffold(args: SynthArgs): Promise<{ scaffold: string; usage: TokenUsage }> {
-  const result = await complete(SCAFFOLD_SYSTEM, [{ role: "user", text: scaffoldTask(args) }]);
+  const result = await complete(SCAFFOLD_SYSTEM, [{ role: "user", text: scaffoldTask(args) }], args.provider);
   const scaffold = result.text.trim();
   if (!scaffold) throw new Error("The model returned no structured plan.");
   return { scaffold, usage: result.usage };
@@ -192,6 +231,12 @@ function withScaffoldHeader(code: string, scaffold: string): string {
  * should look at, and silent retries just burn device minutes.
  */
 export async function repairSpec(
+  args: SynthArgs & { spec: string; failure: string; domSnapshot?: string },
+): Promise<{ code: string; usage: TokenUsage }> {
+  return withTimeoutRetry("repair", args, repairSpecOnce);
+}
+
+async function repairSpecOnce(
   args: SynthArgs & { spec: string; failure: string; domSnapshot?: string },
 ): Promise<{ code: string; usage: TokenUsage }> {
   let usage = emptyUsage();
@@ -228,11 +273,15 @@ export async function repairSpec(
     scaffold = generated.scaffold;
   }
 
-  const result = await complete(synthSystem(args.language), [
-    { role: "user", text: synthTask({ ...args, scaffold }) },
-    { role: "assistant", text: "```" + fenceFor(args.language ?? "js") + "\n" + unbindSecretsInSpec(args.spec) + "\n```" },
-    { role: "user", text: parts.join("\n") },
-  ]);
+  const result = await complete(
+    synthSystem(args.language),
+    [
+      { role: "user", text: synthTask({ ...args, scaffold }) },
+      { role: "assistant", text: "```" + fenceFor(args.language ?? "js") + "\n" + unbindSecretsInSpec(args.spec) + "\n```" },
+      { role: "user", text: parts.join("\n") },
+    ],
+    args.provider,
+  );
   usage = addUsage(usage, result.usage);
 
   return { code: bindSecretsInSpec(guardSpec(extractCode(result.text))), usage };
@@ -272,11 +321,84 @@ export async function summarizeFailure(args: {
   }
 }
 
-async function complete(system: string, turns: CompleteTurn[]): Promise<{ text: string; usage: TokenUsage }> {
+// Kept low: today's evidence is that shrinking the transcript further does not
+// help a primary provider that 504s regardless of size (tested down to ~12%
+// of the original with no change in outcome) - so a couple of quick retries
+// against transient blips is worth it, but burning many minutes on repeated
+// shrink attempts against a backend that's proven not to respond isn't.
+// llmSecondary (below) is the real answer to a primary that's just down.
+const MAX_TIMEOUT_RETRIES = 1;
+
+/**
+ * A gateway timeout (504, or a plain connection timeout), or a response that
+ * came back with nothing usable in it — both point at a flaky backend rather
+ * than a wrong request, so a retry (smaller, or just another attempt) is
+ * worth one more call. A 4xx or a genuine parse/validation failure is not
+ * included here: those mean the request itself is wrong, and shrinking the
+ * transcript further would not fix them.
+ */
+function isRetryable(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /\b50[0-9]\b|gateway time-?out|\btimed?[\s-]?out\b|connection error|ETIMEDOUT|ECONNRESET|ECONNREFUSED|returned no (structured plan|spec code|additional plan steps)/i.test(
+    message,
+  );
+}
+
+/**
+ * Retries a synth/repair/extend call with a progressively shorter transcript
+ * on a timeout, instead of failing the whole run on the first slow response.
+ * Generic over the arg shape so synthesizeSpec, repairSpec and extendSpec can
+ * all share one retry policy rather than three copies of the same loop.
+ *
+ * Once the primary provider's own retries are exhausted, makes exactly one
+ * more attempt against llmSecondary (if configured) — with the *original*,
+ * unshrunk transcript, since a different provider isn't known to share
+ * whatever limitation the primary hit. `label` only affects the log wording.
+ */
+async function withTimeoutRetry<
+  A extends { transcript: string; provider?: LlmProvider; onRetry?: (note: string) => void },
+  R,
+>(label: string, args: A, run: (args: A) => Promise<R>): Promise<R> {
+  let attemptArgs = args;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await run(attemptArgs);
+    } catch (err) {
+      if (!isRetryable(err)) throw err;
+
+      if (attempt < MAX_TIMEOUT_RETRIES) {
+        args.onRetry?.(
+          `${label} call failed (timeout or empty response); retrying with a shorter transcript (attempt ${attempt + 1}/${MAX_TIMEOUT_RETRIES})`,
+        );
+        attemptArgs = { ...attemptArgs, transcript: shrinkTranscript(args.transcript, 2 ** -(attempt + 1)) };
+        continue;
+      }
+
+      if (llmSecondary && attemptArgs.provider !== llmSecondary) {
+        args.onRetry?.(
+          `${label} still failing on the primary provider after ${MAX_TIMEOUT_RETRIES + 1} attempt(s); falling back to ${llmSecondary.id} for this step`,
+        );
+        attemptArgs = { ...args, provider: llmSecondary };
+        continue;
+      }
+
+      throw err;
+    }
+  }
+}
+
+async function complete(
+  system: string,
+  turns: CompleteTurn[],
+  provider: LlmProvider = llm,
+): Promise<{ text: string; usage: TokenUsage }> {
   try {
-    return await llm.complete({ system, turns, maxTokens: config.SYNTH_MAX_OUTPUT_TOKENS });
+    return await provider.complete({ system, turns, maxTokens: config.SYNTH_MAX_OUTPUT_TOKENS });
   } catch (err) {
-    if (llmFallback && llm.isRateLimited(err)) {
+    // The same-provider, lighter-model fallback only makes sense while still
+    // on the primary — once withTimeoutRetry has already switched to
+    // llmSecondary, there is no second fallback behind that.
+    if (provider === llm && llmFallback && llm.isRateLimited(err)) {
       try {
         return await llmFallback.complete({ system, turns, maxTokens: config.SYNTH_MAX_OUTPUT_TOKENS });
       } catch (fallbackErr) {
@@ -285,7 +407,7 @@ async function complete(system: string, turns: CompleteTurn[]): Promise<{ text: 
         );
       }
     }
-    throw new Error(llm.describeError(err));
+    throw new Error(provider.describeError(err));
   }
 }
 

@@ -94,3 +94,20 @@ function boundaryAt<T>(messages: readonly T[], from: number, startsGroup: (m: T)
   }
   return -1;
 }
+
+/**
+ * Keep only the most recent lines of a transcript, dropping the oldest first —
+ * same "recent context matters most, the objective is pinned separately" policy
+ * as trimHistory above, applied to the plain-string transcript synthesize reads
+ * rather than a live message array. Used to retry a request that timed out with
+ * a smaller payload, on the theory that a slow/overloaded backend may still
+ * answer a smaller one in time.
+ */
+export function shrinkTranscript(transcript: string, keepFraction: number): string {
+  const lines = transcript.split("\n");
+  const keep = Math.max(5, Math.ceil(lines.length * keepFraction));
+  if (keep >= lines.length) return transcript;
+
+  const dropped = lines.length - keep;
+  return [`[...${dropped} earlier transcript line(s) dropped after a timeout retry...]`, ...lines.slice(-keep)].join("\n");
+}

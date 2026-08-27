@@ -11,7 +11,14 @@ export type { LlmConversation, LlmProvider, LlmToolDef, LlmToolCall, LlmToolResu
  * Both SDKs are safe to share across concurrent lanes and keep their own
  * connection pooling and retry policy.
  */
-export const llm: LlmProvider = build(config.llm.model);
+export const llm: LlmProvider = build({
+  provider: config.llm.provider,
+  apiKey: config.llm.apiKey,
+  baseURL: config.llm.baseURL,
+  model: config.llm.model,
+  supportsVision: config.llm.supportsVision,
+  maxRetries: config.llm.maxRetries,
+});
 
 /**
  * Same provider and key, a different model - built lazily only if
@@ -21,25 +28,58 @@ export const llm: LlmProvider = build(config.llm.model);
  * risks losing turn history in a way a stateless one-shot call does not.
  */
 export const llmFallback: LlmProvider | null = config.llm.fallbackModel
-  ? build(config.llm.fallbackModel)
+  ? build({
+      provider: config.llm.provider,
+      apiKey: config.llm.apiKey,
+      baseURL: config.llm.baseURL,
+      model: config.llm.fallbackModel,
+      supportsVision: config.llm.supportsVision,
+      maxRetries: config.llm.maxRetries,
+    })
   : null;
 
-function build(model: string): LlmProvider {
-  const { provider, apiKey, baseURL, supportsVision, maxRetries } = config.llm;
+/**
+ * A genuinely different provider - not just a different model on the same
+ * one - built lazily only if SECONDARY_LLM_PROVIDER is set. Tried once by
+ * synthesize/repair as a last resort after the primary provider itself keeps
+ * failing (timeouts, 504s), which llmFallback above cannot help with since it
+ * shares the primary's own endpoint. Same "not wired into explore" reasoning
+ * applies.
+ */
+export const llmSecondary: LlmProvider | null = config.secondary
+  ? build({
+      provider: config.secondary.provider,
+      apiKey: config.secondary.apiKey,
+      baseURL: config.secondary.baseURL,
+      model: config.secondary.model,
+      // Synthesize-class calls are text-only (see synthesize.ts's `complete`) -
+      // no image turns are ever built for this provider to support or not.
+      supportsVision: false,
+      maxRetries: config.secondary.maxRetries,
+    })
+  : null;
 
-  if (provider === "anthropic") {
-    return createAnthropicProvider({ apiKey, model, maxRetries });
+function build(opts: {
+  provider: string;
+  apiKey: string;
+  baseURL: string | null;
+  model: string;
+  supportsVision: boolean;
+  maxRetries: number;
+}): LlmProvider {
+  if (opts.provider === "anthropic") {
+    return createAnthropicProvider({ apiKey: opts.apiKey, model: opts.model, maxRetries: opts.maxRetries });
   }
 
   return createOpenAiCompatibleProvider({
-    id: provider,
-    apiKey,
-    baseURL: baseURL!,
-    model,
-    supportsVision,
-    maxRetries,
+    id: opts.provider,
+    apiKey: opts.apiKey,
+    baseURL: opts.baseURL!,
+    model: opts.model,
+    supportsVision: opts.supportsVision,
+    maxRetries: opts.maxRetries,
     // Google's compatibility layer documents the older field name.
-    tokenParam: provider === "gemini" ? "max_tokens" : "max_completion_tokens",
+    tokenParam: opts.provider === "gemini" ? "max_tokens" : "max_completion_tokens",
   });
 }
 

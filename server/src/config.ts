@@ -88,6 +88,27 @@ const Env = z.object({
 
   MAX_AGENT_STEPS: z.coerce.number().int().positive().max(200).default(40),
   VERIFY_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000),
+
+  /**
+   * Pause between the last explore call and the first synthesize call. Some
+   * gateways rate-limit or briefly queue-throttle a burst of requests from
+   * the same key/session; explore's many small calls can trip that even
+   * though each one individually succeeds, leaving the very next (synthesize)
+   * call to eat the delay as an outright timeout. 0 disables it.
+   */
+  SYNTH_COOLDOWN_MS: z.coerce.number().int().min(0).max(120_000).default(0),
+
+  /**
+   * A genuinely different provider, tried once as a last resort for a
+   * synthesize/repair call that keeps failing on the primary - unlike
+   * LLM_FALLBACK_MODEL (same provider, a lighter model), this is for when the
+   * primary provider itself is the problem. Optional as a whole: unset
+   * SECONDARY_LLM_PROVIDER and none of this is built.
+   */
+  SECONDARY_LLM_PROVIDER: z.enum(["anthropic", "groq", "gemini", "openai", "ollama", "custom"]).optional(),
+  SECONDARY_LLM_BASE_URL: z.string().url().optional(),
+  SECONDARY_LLM_API_KEY: z.string().optional(),
+  SECONDARY_LLM_MODEL: z.string().optional(),
 });
 
 /**
@@ -222,6 +243,31 @@ function resolveLlm() {
   };
 }
 
+/**
+ * A fully independent second provider - not a preset lookup like resolveLlm,
+ * since this is meant to be an explicit, known-good backup rather than
+ * something that needs smart defaults. null unless SECONDARY_LLM_PROVIDER is
+ * set, in which case the other three become required.
+ */
+function resolveSecondary() {
+  const provider = env.SECONDARY_LLM_PROVIDER;
+  if (!provider) return null;
+
+  if (!env.SECONDARY_LLM_API_KEY) throw new Error("SECONDARY_LLM_PROVIDER is set but SECONDARY_LLM_API_KEY is missing.");
+  if (provider !== "anthropic" && !env.SECONDARY_LLM_BASE_URL) {
+    throw new Error("SECONDARY_LLM_PROVIDER is set but SECONDARY_LLM_BASE_URL is missing.");
+  }
+  if (!env.SECONDARY_LLM_MODEL) throw new Error("SECONDARY_LLM_PROVIDER is set but SECONDARY_LLM_MODEL is missing.");
+
+  return {
+    provider,
+    apiKey: env.SECONDARY_LLM_API_KEY,
+    baseURL: env.SECONDARY_LLM_BASE_URL ?? null,
+    model: env.SECONDARY_LLM_MODEL,
+    maxRetries: env.LLM_MAX_RETRIES,
+  };
+}
+
 function resolveCloud() {
   if (env.CLOUD_PROVIDER === "browserstack") {
     if (!env.BROWSERSTACK_USERNAME || !env.BROWSERSTACK_ACCESS_KEY) return null;
@@ -258,7 +304,9 @@ export const config = {
   clientsRoot: path.resolve(repoRoot, env.CLIENTS_ROOT),
   cloud: resolveCloud(),
   llm: resolveLlm(),
+  secondary: resolveSecondary(),
 };
 
 export type CloudTarget = NonNullable<ReturnType<typeof resolveCloud>>;
+export type SecondaryLlmConfig = NonNullable<ReturnType<typeof resolveSecondary>>;
 export type LlmConfig = ReturnType<typeof resolveLlm>;

@@ -201,6 +201,8 @@ export async function runLane({ run, platform, signal }: LaneArgs): Promise<void
     await mcp.close();
     mcp = null;
 
+    if (config.SYNTH_COOLDOWN_MS > 0) await new Promise((resolve) => setTimeout(resolve, config.SYNTH_COOLDOWN_MS));
+
     emit({ type: "lane.phase", platform, phase: "synthesize" });
     const synthArgs = {
       prompt: run.prompt,
@@ -209,6 +211,7 @@ export async function runLane({ run, platform, signal }: LaneArgs): Promise<void
       transcript: secrets.redact(exploration.transcript),
       recorded,
       language: knowledge.project.language,
+      onRetry: (note: string) => onLine(`--- ${note} ---`),
     };
     const synthesized = await synthesizeSpec(synthArgs);
     let spec = synthesized.code;
@@ -462,7 +465,10 @@ export async function extendLane({ run, platform, baseLane, additionalPrompt, si
     await mcp.close();
     mcp = null;
 
+    if (config.SYNTH_COOLDOWN_MS > 0) await new Promise((resolve) => setTimeout(resolve, config.SYNTH_COOLDOWN_MS));
+
     emit({ type: "lane.phase", platform, phase: "synthesize" });
+    const onLine = (line: string) => emit({ type: "verify.log", platform, line });
     const synthesized = await extendSpec({
       additionalPrompt,
       platform,
@@ -471,13 +477,13 @@ export async function extendLane({ run, platform, baseLane, additionalPrompt, si
       recorded,
       existingCode: baseSpec,
       language: knowledge.project.language,
+      onRetry: (note) => onLine(`--- ${note} ---`),
     });
     let spec = synthesized.code;
     emit({ type: "lane.usage", platform, usage: synthesized.usage });
     emit({ type: "artifact", platform, kind: "spec", code: spec });
 
     emit({ type: "lane.phase", platform, phase: "verify" });
-    const onLine = (line: string) => emit({ type: "verify.log", platform, line });
 
     const title = titleOf(spec) ?? run.prompt.slice(0, 60);
     const specName =
@@ -504,6 +510,7 @@ export async function extendLane({ run, platform, baseLane, additionalPrompt, si
         spec,
         failure: result.output,
         domSnapshot: result.domSnapshot,
+        onRetry: (note) => onLine(`--- ${note} ---`),
       });
       spec = repaired.code;
       emit({ type: "lane.usage", platform, usage: repaired.usage });

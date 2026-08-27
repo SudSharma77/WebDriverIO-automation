@@ -49,6 +49,12 @@ export function createOpenAiCompatibleProvider(opts: OpenAiCompatibleOptions): L
     baseURL: opts.baseURL,
     // Free tiers 429 constantly; the SDK honours Retry-After on each attempt.
     maxRetries: opts.maxRetries,
+    // The SDK defaults to 10 minutes per attempt - with maxRetries this lets a
+    // single call legitimately hang for the better part of an hour before the
+    // caller's own retry-with-a-smaller-request logic ever gets a chance to
+    // run. A slow-but-working endpoint answers in seconds; anything past this
+    // is worth failing fast on and letting the caller decide what to do next.
+    timeout: 90_000,
   });
 
   /** The response cap, under whichever field name this endpoint accepts. */
