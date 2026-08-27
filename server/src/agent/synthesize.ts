@@ -34,6 +34,8 @@ export interface SynthArgs {
   onRetry?: (note: string) => void;
   /** Set internally by withTimeoutRetry once it falls back to the secondary provider. */
   provider?: LlmProvider;
+  /** Fired after every successful API response, tagged with which provider served it - independent of whether the overall call ultimately succeeds. */
+  onProviderUsage?: (provider: string, usage: TokenUsage) => void;
 }
 
 /**
@@ -64,6 +66,7 @@ async function synthesizeSpecOnce(args: SynthArgs): Promise<{ code: string; usag
     synthSystem(args.language),
     [{ role: "user", text: synthTask({ ...args, scaffold }) }],
     args.provider,
+    args.onProviderUsage,
   );
   usage = addUsage(usage, first.usage);
   let code = guardSpec(extractCode(first.text));
@@ -99,6 +102,8 @@ export interface ExtendArgs {
   onRetry?: (note: string) => void;
   /** Set internally by withTimeoutRetry once it falls back to the secondary provider. */
   provider?: LlmProvider;
+  /** Fired after every successful API response, tagged with which provider served it - independent of whether the overall call ultimately succeeds. */
+  onProviderUsage?: (provider: string, usage: TokenUsage) => void;
 }
 
 /**
@@ -128,6 +133,7 @@ async function extendSpecOnce(args: ExtendArgs): Promise<{ code: string; usage: 
     EXTEND_SCAFFOLD_SYSTEM,
     [{ role: "user", text: extendScaffoldTask({ ...args, originalScaffold }) }],
     args.provider,
+    args.onProviderUsage,
   );
   usage = addUsage(usage, scaffoldDelta.usage);
   const newSteps = scaffoldDelta.text.trim();
@@ -139,6 +145,7 @@ async function extendSpecOnce(args: ExtendArgs): Promise<{ code: string; usage: 
     synthSystem(args.language),
     [{ role: "user", text: extendSynthTask({ ...args, mergedScaffold, existingCode }) }],
     args.provider,
+    args.onProviderUsage,
   );
   usage = addUsage(usage, first.usage);
   let code = guardSpec(extractCode(first.text));
@@ -173,6 +180,7 @@ async function fixExtendLintIssues(
       },
     ],
     args.provider,
+    args.onProviderUsage,
   );
   return { code: guardSpec(extractCode(result.text)), usage: result.usage };
 }
@@ -201,12 +209,18 @@ async function fixLintIssues(
       },
     ],
     args.provider,
+    args.onProviderUsage,
   );
   return { code: guardSpec(extractCode(result.text)), usage: result.usage };
 }
 
 async function generateScaffold(args: SynthArgs): Promise<{ scaffold: string; usage: TokenUsage }> {
-  const result = await complete(SCAFFOLD_SYSTEM, [{ role: "user", text: scaffoldTask(args) }], args.provider);
+  const result = await complete(
+    SCAFFOLD_SYSTEM,
+    [{ role: "user", text: scaffoldTask(args) }],
+    args.provider,
+    args.onProviderUsage,
+  );
   const scaffold = result.text.trim();
   if (!scaffold) throw new Error("The model returned no structured plan.");
   return { scaffold, usage: result.usage };
@@ -281,6 +295,7 @@ async function repairSpecOnce(
       { role: "user", text: parts.join("\n") },
     ],
     args.provider,
+    args.onProviderUsage,
   );
   usage = addUsage(usage, result.usage);
 
@@ -391,16 +406,24 @@ async function complete(
   system: string,
   turns: CompleteTurn[],
   provider: LlmProvider = llm,
+  onProviderUsage?: (provider: string, usage: TokenUsage) => void,
 ): Promise<{ text: string; usage: TokenUsage }> {
   try {
-    return await provider.complete({ system, turns, maxTokens: config.SYNTH_MAX_OUTPUT_TOKENS });
+    const result = await provider.complete({ system, turns, maxTokens: config.SYNTH_MAX_OUTPUT_TOKENS });
+    // Reported the moment a real response comes back, not once the whole
+    // multi-step call finishes — so tokens spent on an attempt that a later
+    // step then fails are still counted, not silently dropped with the throw.
+    onProviderUsage?.(provider.id, result.usage);
+    return result;
   } catch (err) {
     // The same-provider, lighter-model fallback only makes sense while still
     // on the primary — once withTimeoutRetry has already switched to
     // llmSecondary, there is no second fallback behind that.
     if (provider === llm && llmFallback && llm.isRateLimited(err)) {
       try {
-        return await llmFallback.complete({ system, turns, maxTokens: config.SYNTH_MAX_OUTPUT_TOKENS });
+        const result = await llmFallback.complete({ system, turns, maxTokens: config.SYNTH_MAX_OUTPUT_TOKENS });
+        onProviderUsage?.(llmFallback.id, result.usage);
+        return result;
       } catch (fallbackErr) {
         throw new Error(
           `${llm.describeError(err)} (fallback model ${llmFallback.model} also failed: ${llmFallback.describeError(fallbackErr)})`,

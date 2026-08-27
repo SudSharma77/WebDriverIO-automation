@@ -64,6 +64,19 @@ function applyToLane(lane: LaneState, event: RunEvent): LaneState {
           outputTokens: lane.usage.outputTokens + event.usage.outputTokens,
         },
       };
+    case "lane.provider_usage": {
+      const prior = lane.usageByProvider?.[event.provider] ?? { inputTokens: 0, outputTokens: 0 };
+      return {
+        ...lane,
+        usageByProvider: {
+          ...lane.usageByProvider,
+          [event.provider]: {
+            inputTokens: prior.inputTokens + event.usage.inputTokens,
+            outputTokens: prior.outputTokens + event.usage.outputTokens,
+          },
+        },
+      };
+    }
     default:
       return lane;
   }

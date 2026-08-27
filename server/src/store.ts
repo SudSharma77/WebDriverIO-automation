@@ -50,6 +50,7 @@ export class RunStore {
       // never hits undefined.
       for (const lane of Object.values(run.lanes)) {
         lane.usage ??= { inputTokens: 0, outputTokens: 0 };
+        lane.usageByProvider ??= {};
 
         // Nothing loaded from disk can still be running: the process that owned
         // its browser session died with the last server. Left as "running" the
@@ -84,6 +85,7 @@ export class RunStore {
         verifyLog: [],
         toolCallCount: 0,
         usage: { inputTokens: 0, outputTokens: 0 },
+        usageByProvider: {},
       };
     }
 
@@ -364,6 +366,14 @@ export class RunStore {
           outputTokens: lane.usage.outputTokens + event.usage.outputTokens,
         };
         break;
+      case "lane.provider_usage": {
+        const prior = lane.usageByProvider[event.provider] ?? { inputTokens: 0, outputTokens: 0 };
+        lane.usageByProvider[event.provider] = {
+          inputTokens: prior.inputTokens + event.usage.inputTokens,
+          outputTokens: prior.outputTokens + event.usage.outputTokens,
+        };
+        break;
+      }
       default:
         break;
     }

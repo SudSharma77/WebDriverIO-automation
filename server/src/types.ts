@@ -135,6 +135,8 @@ export interface LaneState {
   saved?: SaveSummary;
   /** Running total across every LLM call this lane has made so far - explore, structure, code, lint-fix, repair, failure summary. */
   usage: TokenUsage;
+  /** The same total, split by which provider actually served each call - keyed by provider id ("custom", "gemini", ...). Absent/partial on runs from before this was tracked. */
+  usageByProvider: Record<string, TokenUsage>;
 }
 
 export interface AgentStep {
@@ -210,5 +212,7 @@ export type RunEvent =
   | { type: "lane.saved"; platform: Platform; report: SaveSummary }
   /** A delta to add to the lane's running total, not the total itself - emitted once per LLM call site (explore, structure, code, repair, ...). */
   | { type: "lane.usage"; platform: Platform; usage: TokenUsage }
+  /** Same delta, tagged with which provider actually served it - independent of lane.usage above, so the two are additive and never need reconciling. */
+  | { type: "lane.provider_usage"; platform: Platform; provider: string; usage: TokenUsage }
   | { type: "run.done"; runId: string }
   | { type: "error"; platform?: Platform; message: string };

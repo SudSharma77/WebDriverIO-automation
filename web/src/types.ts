@@ -108,6 +108,8 @@ export interface LaneState {
   toolCallCount: number;
   /** Running total across every LLM call this lane has made so far. */
   usage: TokenUsage;
+  /** The same total, split by which provider served each call. Absent/partial on runs from before this was tracked. */
+  usageByProvider?: Record<string, TokenUsage>;
   /** Client-side only: the agent's running narration. */
   narration?: string[];
   reuse?: { mode: ReuseMode; reason: string };
@@ -190,6 +192,8 @@ export type RunEvent =
   | { type: "lane.saved"; platform: Platform; report: SaveSummary }
   /** A delta to add to the lane's running total, not the total itself. */
   | { type: "lane.usage"; platform: Platform; usage: TokenUsage }
+  /** Same delta, tagged with which provider served it - independent of lane.usage above. */
+  | { type: "lane.provider_usage"; platform: Platform; provider: string; usage: TokenUsage }
   | { type: "run.done"; runId: string }
   | { type: "error"; platform?: Platform; message: string };
 

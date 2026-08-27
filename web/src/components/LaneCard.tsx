@@ -220,7 +220,7 @@ export function LaneCard({ runId, lane, onZoom, onReverify, onExtend }: Props) {
             {lane.toolCallCount} action{lane.toolCallCount === 1 ? "" : "s"}
             {lane.startedAt && lane.finishedAt ? ` · ${Math.round((lane.finishedAt - lane.startedAt) / 1000)}s` : ""}
             {" "}
-            <TokenBadge usage={lane.usage} />
+            <TokenBadge usage={lane.usage} usageByProvider={lane.usageByProvider} />
           </div>
         </div>
         <div className="lane__head-right">

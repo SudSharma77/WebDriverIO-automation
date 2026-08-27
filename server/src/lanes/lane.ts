@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { config } from "../config.js";
 import { explore, type ExploreResult } from "../agent/explore.js";
+import { llm } from "../agent/llm/index.js";
 import { skimSite } from "../agent/siteSkim.js";
 import { extendSpec, repairSpec, summarizeFailure, synthesizeSpec } from "../agent/synthesize.js";
 import { getClient, recordSyncResult, requiresReview } from "../knowledge/clients.js";
@@ -15,7 +16,7 @@ import { selectTools, toLlmTools } from "../mcp/bridge.js";
 import { WdioMcp, errorMessage } from "../mcp/client.js";
 import { verify } from "../runner/verify.js";
 import { store } from "../store.js";
-import type { LaneState, Platform, RunState } from "../types.js";
+import type { LaneState, Platform, RunState, TokenUsage } from "../types.js";
 import { planFor, type LanePlan } from "./capabilities.js";
 import { preflight } from "./preflight.js";
 
@@ -185,6 +186,9 @@ export async function runLane({ run, platform, signal }: LaneArgs): Promise<void
       },
     });
     emit({ type: "lane.usage", platform, usage: exploration.usage });
+    // Explore never falls back mid-conversation (see llm/index.ts), so it's
+    // always the primary provider - no need to thread a provider tag through it.
+    emit({ type: "lane.provider_usage", platform, provider: llm.id, usage: exploration.usage });
 
     emit({ type: "lane.phase", platform, phase: "export" });
     // The MCP recorder replays what actually reached the device, so a filled
@@ -212,6 +216,7 @@ export async function runLane({ run, platform, signal }: LaneArgs): Promise<void
       recorded,
       language: knowledge.project.language,
       onRetry: (note: string) => onLine(`--- ${note} ---`),
+      onProviderUsage: (provider: string, usage: TokenUsage) => emit({ type: "lane.provider_usage", platform, provider, usage }),
     };
     const synthesized = await synthesizeSpec(synthArgs);
     let spec = synthesized.code;
@@ -455,6 +460,9 @@ export async function extendLane({ run, platform, baseLane, additionalPrompt, si
       },
     });
     emit({ type: "lane.usage", platform, usage: exploration.usage });
+    // Explore never falls back mid-conversation (see llm/index.ts), so it's
+    // always the primary provider - no need to thread a provider tag through it.
+    emit({ type: "lane.provider_usage", platform, provider: llm.id, usage: exploration.usage });
 
     emit({ type: "lane.phase", platform, phase: "export" });
     const recorded = await mcp.readResourceText("wdio://session/current/code");
@@ -478,6 +486,7 @@ export async function extendLane({ run, platform, baseLane, additionalPrompt, si
       existingCode: baseSpec,
       language: knowledge.project.language,
       onRetry: (note) => onLine(`--- ${note} ---`),
+      onProviderUsage: (provider: string, usage: TokenUsage) => emit({ type: "lane.provider_usage", platform, provider, usage }),
     });
     let spec = synthesized.code;
     emit({ type: "lane.usage", platform, usage: synthesized.usage });
@@ -511,6 +520,7 @@ export async function extendLane({ run, platform, baseLane, additionalPrompt, si
         failure: result.output,
         domSnapshot: result.domSnapshot,
         onRetry: (note) => onLine(`--- ${note} ---`),
+        onProviderUsage: (provider: string, usage: TokenUsage) => emit({ type: "lane.provider_usage", platform, provider, usage }),
       });
       spec = repaired.code;
       emit({ type: "lane.usage", platform, usage: repaired.usage });
