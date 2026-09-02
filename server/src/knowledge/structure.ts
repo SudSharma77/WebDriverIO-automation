@@ -28,7 +28,7 @@ export const SELECTOR_SUFFIX = "selectors";
 export const SELECTOR_CONST_SUFFIX = "Selectors";
 
 /** How an element was interacted with, which decides the generated method. */
-export type Interaction = "click" | "type" | "read" | "check" | "wait";
+export type Interaction = "click" | "type" | "read" | "check" | "wait" | "dismiss";
 
 export interface ElementFact {
   /** Human name from the spec, e.g. "the username field". */
@@ -74,6 +74,7 @@ export const HELPER_INTERACTION: Record<string, Interaction> = {
   isVisible: "check",
   waitForGone: "wait",
   find: "check",
+  dismissIfPresent: "dismiss",
 };
 
 /**
@@ -329,6 +330,8 @@ export function methodsFor(element: ElementFact): Array<{ name: string; interact
         return { name: `is${capital}Visible`, interaction };
       case "wait":
         return { name: `waitFor${capital}ToDisappear`, interaction };
+      case "dismiss":
+        return { name: `dismiss${capital}`, interaction };
     }
   });
 }

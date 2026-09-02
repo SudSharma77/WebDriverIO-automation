@@ -126,6 +126,8 @@ export function renderMethodBody(
       return `  async ${name}() {\n    return this.isVisible(${locator});\n  }`;
     case "wait":
       return `  async ${name}() {\n    await this.waitForGone(${locator});\n  }`;
+    case "dismiss":
+      return `  async ${name}() {\n    await this.dismissIfPresent(${locator}, ${label});\n  }`;
   }
 }
 
@@ -178,6 +180,10 @@ export class BasePage {
 
   async waitForGone(${selector})${returns("void")} {
     await wdio.waitForGone(selector);
+  }
+
+  async dismissIfPresent(${selector}, ${label})${returns("boolean")} {
+    return wdio.dismissIfPresent(selector, { label });
   }
 
   /** Override on a page that has a better readiness signal than the document. */

@@ -138,17 +138,19 @@ Implement the plan exactly — one it() step per numbered Steps line, in the sam
 
 Output requirements:
 __EMIT_LINE__
-- Interact through the test framework's helpers, imported as: import { click, type, getText, isVisible, waitForGone, waitForPageLoad } from '@testlab/framework';
+- Interact through the test framework's helpers, imported as: import { click, type, getText, isVisible, waitForGone, waitForPageLoad, dismissIfPresent } from '@testlab/framework';
   * click(selector, { label })            — waits for clickable, then clicks once
   * type(selector, text, { label })       — waits, clears, types
   * getText(selector, { label })          — waits for displayed, returns trimmed text
   * isVisible(selector) -> boolean        — never throws
   * waitForGone(selector)                 — waits for a spinner/modal to disappear
   * waitForPageLoad()                     — waits for document.readyState complete
-  * dismissIfPresent(selector, { label }) — closes a banner if it shows up, no-op if not
-- If the transcript mentions a cookie or consent banner, dismiss it with dismissIfPresent BEFORE the steps that touch the form underneath — never with a plain click. These banners load late, so a click can run before the banner exists and then the banner covers the form; and on a repeat visit the cookie is already set and the banner never appears, so an unconditional click fails. dismissIfPresent handles both.
+  * dismissIfPresent(selector, { label }) — closes a banner if it shows up, no-op if not; already waits for it to be gone
+- If the transcript mentions a cookie or consent banner, dismiss it with \`dismissIfPresent('<selector>', { label: 'the cookie banner' })\` BEFORE the steps that touch the form underneath — never with a plain click. These banners load late, so a click can run before the banner exists and then the banner covers the form; and on a repeat visit the cookie is already set and the banner never appears, so an unconditional click fails. dismissIfPresent handles both. Use the label \`'the cookie banner'\` exactly, so it lifts to one predictable page-object method. Do NOT add a separate waitForGone for the banner afterwards — dismissIfPresent already waited, and a second wait on a guessed banner selector is a common false failure.
   Always pass a human \`label\` ("the checkout button"): it names the element in the failure message when the selector misses.
-- Drop to raw \`$\`/\`$$\` only for something the helpers do not cover, and say why in a comment.
+- EVERY element you touch goes through one of the labelled helpers above, with a string-literal selector and a \`label\` — a click, a typed value, a text read, AND every presence/visibility check. For "is X shown?", write \`expect(await isVisible('<selector>', { label: 'X' })).toBe(true)\`; NEVER \`expect(await $('<selector>')).toBeDisplayed()\` and never assign \`const x = $('<selector>')\`. Reason: after this pass every labelled helper call is lifted into a page-object method and its selector moved out of the spec into \`src/selectors\`, so the saved spec reads as steps and data. A selector left in a bare \`$()\`, a variable, or an \`expect($())\` is NOT lifted — it stays hard-coded in the spec forever.
+- Do not use \`browser.execute(...)\` for element work or scrolling — the helpers already wait, and a scroll is not a test step.
+- Drop to raw \`$\`/\`$$\` only for something no helper covers at all, and say why in a comment.
 - Structure it as describe(...) / it(...). One it() per scenario.
 - Use the selectors that were actually observed in the transcript. Never introduce a selector that does not appear there.
 - Every it() must end in at least one real assertion using \`expect\` (e.g. await expect(await getText('~cart-badge')).toBe('1')). A spec with no assertion is a failure, not a test.
@@ -157,7 +159,7 @@ __EMIT_LINE__
 - Add a brief comment above each logical step describing the user-visible intent, not the mechanics.
 - If the transcript typed a credential placeholder such as {{PASSWORD}}, reproduce that placeholder verbatim in the spec as a bare string, e.g. await $('#password').setValue('{{PASSWORD}}'). It is rewritten into an environment read before the spec runs. Never substitute a literal credential, and never invent a placeholder the transcript did not use.
 
-Assertions — use ONLY real expect-webdriverio matchers, called exactly like this. Do not invent a matcher name (there is no \`toHaveUrlContaining\`, no \`toHaveTextContaining\` — these do not exist and will throw \`TypeError: ... is not a function\` at replay time):
+Assertions — use ONLY real expect-webdriverio matchers, called exactly like this. Do not invent a matcher name (there is no \`toHaveUrlContaining\`, no \`toHaveTextContaining\` — these do not exist and will throw \`TypeError: ... is not a function\` at replay time). Apply an element matcher to a value a helper or page-object method returns, or to a \`$$()\` collection — not to a bare \`$('<selector>')\`, which keeps the selector in the spec (see the helper rule above; a presence check is \`isVisible(...)\` asserted with \`.toBe(true)\`):
 - toBeDisplayed() / toExist() / toBeClickable() / toBeEnabled() / toBeSelected()
 - toHaveText(str) / toHaveValue(str) / toHaveAttribute(attr, val) / toHaveClass(name)
 - toHaveUrl(str) / toHaveTitle(str)
