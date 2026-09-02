@@ -155,9 +155,20 @@ export interface SaveReport {
  * today's one-file-per-scenario naming, gated on platform rather than on
  * whether the string happens to parse.
  */
-export function categoryFile(target: string, title: string, platform: Platform, language: ProjectLanguage = "js"): string {
+/**
+ * The feature-area name a scenario belongs to, independent of what kind of
+ * file it lands in — `categoryFile` uses it for the spec, `liftIntoFlow` uses
+ * the same one for the grouped business-function file, so `login.web.spec.ts`
+ * and `login-bfs.ts` always pair up rather than drifting apart under two
+ * different naming schemes.
+ */
+export function categorySlug(target: string, title: string, platform: Platform): string {
   const slug = platform === "web" ? slugFromUrl(target) : null;
-  return `${slug ?? slugify(title)}.${platform}.spec${sourceExt(language)}`;
+  return slug ?? slugify(title);
+}
+
+export function categoryFile(target: string, title: string, platform: Platform, language: ProjectLanguage = "js"): string {
+  return `${categorySlug(target, title, platform)}.${platform}.spec${sourceExt(language)}`;
 }
 
 /** `login.web.spec.js` -> `login-2.web.spec.js`, `login-3.web.spec.js`, ... */
@@ -291,7 +302,14 @@ async function saveIntoProject(args: RecordSuccessArgs): Promise<SaveReport> {
   // the odd one out.
   const flow =
     !reused && usesPageObjects
-      ? await liftIntoFlow({ project, specFile, spec: finalCode, pages, verify: args.verifyExtraction })
+      ? await liftIntoFlow({
+          project,
+          specFile,
+          spec: finalCode,
+          pages,
+          categoryFile: `${categorySlug(target, args.title, args.platform)}-bfs`,
+          verify: args.verifyExtraction,
+        })
       : null;
   if (flow?.applied) finalCode = flow.spec;
 
@@ -412,6 +430,8 @@ async function liftIntoFlow(args: {
   specFile: string;
   spec: string;
   pages: PageFact[];
+  /** Basename (no extension) of the grouped file new flows for this scenario's category land in. */
+  categoryFile: string;
   verify?: (spec: string, specFile: string) => Promise<boolean>;
 }): Promise<LiftResult | null> {
   const { project } = args;
@@ -422,23 +442,38 @@ async function liftIntoFlow(args: {
     pages: args.pages,
     language: project.language,
     existingFlows: index.flows,
+    categoryFile: args.categoryFile,
   });
   if (!extracted) return null;
 
   const specPath = path.join(project.specsDir, args.specFile);
   const ext = sourceExt(project.language);
 
-  // A flow file already on disk under a name this run wants to *create* is
-  // someone else's — never overwrite it, the same promise every other
-  // generated file keeps. Reuse writes nothing, so it is unaffected.
-  const written: string[] = [];
+  // Several flows in one run can share a category file, so this tracks each
+  // *unique path's* content from before this run touched it at all — not
+  // per-flow — so a rollback undoes every flow this run added to that file in
+  // one step, rather than partially unwinding it flow by flow.
+  const originalContent = new Map<string, string | null>();
   await fs.mkdir(project.flowsDir, { recursive: true });
+
   for (const flow of extracted.flows) {
     if (!flow.source) continue;
     const flowPath = path.join(project.flowsDir, `${flow.file}${ext}`);
-    if (await fileExists(flowPath)) return null;
-    await fs.writeFile(flowPath, flow.source, "utf8");
-    written.push(flowPath);
+
+    if (!originalContent.has(flowPath)) {
+      originalContent.set(flowPath, await fs.readFile(flowPath, "utf8").catch(() => null));
+    }
+
+    const current = await fs.readFile(flowPath, "utf8").catch(() => null);
+    // A function this file already exports under the name this flow wants is
+    // a real collision (not the reuse case — that never has a `source` to
+    // write) — declined the same way an occupied path always has been here.
+    const newName = /export\s+async\s+function\s+(\w+)/.exec(flow.source)?.[1];
+    if (current && newName && new RegExp(`export\\s+async\\s+function\\s+${escapeRegExp(newName)}\\b`).test(current)) {
+      return null;
+    }
+
+    await fs.writeFile(flowPath, current === null ? flow.source : mergeFlowModule(current, flow.source), "utf8");
   }
 
   await fs.writeFile(specPath, extracted.spec, "utf8");
@@ -448,9 +483,14 @@ async function liftIntoFlow(args: {
 
   if (verified === false) {
     // Put it back exactly as it was, and take the flows with it — a flow no
-    // spec calls is worse than no flow at all.
+    // spec calls is worse than no flow at all. Restoring each touched path to
+    // its pre-run content (rather than deleting it outright) is what keeps
+    // this safe when the path was an existing file this run only added to.
     await fs.writeFile(specPath, args.spec, "utf8");
-    for (const flowPath of written) await fs.rm(flowPath, { force: true });
+    for (const [flowPath, previous] of originalContent) {
+      if (previous === null) await fs.rm(flowPath, { force: true });
+      else await fs.writeFile(flowPath, previous, "utf8");
+    }
     return {
       applied: false,
       spec: args.spec,
@@ -494,11 +534,29 @@ async function liftIntoFlow(args: {
   };
 }
 
-async function fileExists(file: string): Promise<boolean> {
-  return fs
-    .access(file)
-    .then(() => true)
-    .catch(() => false);
+/**
+ * Add one flow's source to a grouped business-function file that already has
+ * others in it.
+ *
+ * Import lines are deduplicated by exact text match rather than merged
+ * token-by-token the way `nest.ts` merges the framework import: every flow
+ * module imports the same fixed `step` from `@testlab/framework` and an
+ * identically-formed line per page object (see `renderFlowModule`), so two
+ * flows sharing a page produce byte-identical import lines — nothing to
+ * reconcile beyond dropping the duplicate. The name-collision case that a
+ * token-level merge would otherwise need to handle is checked separately by
+ * the caller, before this is reached.
+ */
+function mergeFlowModule(existing: string, addition: string): string {
+  const IMPORT_LINE = /^import\s.+;$/gm;
+  const imports = [...new Set([...(existing.match(IMPORT_LINE) ?? []), ...(addition.match(IMPORT_LINE) ?? [])])].sort();
+
+  const strip = (text: string) => text.replace(IMPORT_LINE, "").replace(/^\s+/, "");
+  return `${imports.join("\n")}\n\n${strip(existing).trimEnd()}\n\n${strip(addition)}`;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**

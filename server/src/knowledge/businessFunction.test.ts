@@ -35,7 +35,7 @@ function lift(spec: string, title = "log in with valid credentials", language: P
   const pages = partitionByPage(spec, "web", title);
   const rewrite = rewriteToPageObjects(spec, pages)!;
   const rewritten = finalizeImports(rewrite.code, rewrite.pagesUsed);
-  return single(extractBusinessFunctions({ spec: rewritten, pages, language }));
+  return single(extractBusinessFunctions({ spec: rewritten, pages, language, categoryFile: "test-bfs" }));
 }
 
 /** The old single-scenario view: these fixtures all hold exactly one it(). */
@@ -67,9 +67,9 @@ describe("extractBusinessFunction", () => {
     assert.doesNotMatch(flow.spec, /@testlab\/framework/, "the spec still imports element helpers");
   });
 
-  it("imports exactly the flow it calls", () => {
+  it("imports exactly the flow it calls, from its grouped category file", () => {
     const flow = lift(RAW)!;
-    assert.match(flow.spec, /^import \{ logInWithValidCredentials \} from '\.\.\/\.\.\/src\/flows\/logInWithValidCredentials\.js';/);
+    assert.match(flow.spec, /^import \{ logInWithValidCredentials \} from '\.\.\/\.\.\/src\/flows\/test-bfs\.js';/);
     assert.equal((flow.spec.match(/^import /gm) ?? []).length, 1);
   });
 
@@ -145,7 +145,7 @@ describe("extractBusinessFunctions — a file with several scenarios", () => {
     const pages = partitionByPage(spec, "web", "shop");
     const rewrite = rewriteToPageObjects(spec, pages)!;
     const rewritten = finalizeImports(rewrite.code, rewrite.pagesUsed);
-    return extractBusinessFunctions({ spec: rewritten, pages, language: "ts" });
+    return extractBusinessFunctions({ spec: rewritten, pages, language: "ts", categoryFile: "test-bfs" });
   }
 
   // A spec file accumulates: a later run nests a second scenario into the file
@@ -171,7 +171,7 @@ describe("extractBusinessFunctions — a file with several scenarios", () => {
   it("leaves an already-lifted file alone", () => {
     const once = liftAll(TWO)!;
     const pages = partitionByPage(once.spec, "web", "shop");
-    assert.equal(extractBusinessFunctions({ spec: once.spec, pages, language: "ts" }), null);
+    assert.equal(extractBusinessFunctions({ spec: once.spec, pages, language: "ts", categoryFile: "test-bfs" }), null);
   });
 
   // Regression: a later run lifts only the scenario it just added, and used to
@@ -202,7 +202,7 @@ describe("extractBusinessFunctions — a file with several scenarios", () => {
       "web",
       "shop",
     );
-    const again = extractBusinessFunctions({ spec: nested, pages, language: "ts" })!;
+    const again = extractBusinessFunctions({ spec: nested, pages, language: "ts", categoryFile: "test-bfs" })!;
 
     assert.ok(again, "the newly nested scenario was not lifted");
     assert.match(again.spec, /import \{ logInWithValidCredentials \} from/, "dropped the earlier scenario's flow import");
@@ -232,7 +232,7 @@ describe("extractBusinessFunctions — when it must decline", () => {
   it("declines a spec whose calls were never rewritten into page objects", () => {
     const pages = partitionByPage(RAW, "web", "login");
     // Raw helper calls, no page-object rewrite applied.
-    assert.equal(extractBusinessFunctions({ spec: RAW, pages, language: "ts" }), null);
+    assert.equal(extractBusinessFunctions({ spec: RAW, pages, language: "ts", categoryFile: "test-bfs" }), null);
   });
 });
 
@@ -290,7 +290,7 @@ function liftWith(existingFlows: FlowRecord[], spec = RAW, title = "log in with 
   const pages = partitionByPage(spec, "web", title);
   const rewrite = rewriteToPageObjects(spec, pages)!;
   const rewritten = finalizeImports(rewrite.code, rewrite.pagesUsed);
-  return single(extractBusinessFunctions({ spec: rewritten, pages, language: "ts", existingFlows }));
+  return single(extractBusinessFunctions({ spec: rewritten, pages, language: "ts", existingFlows, categoryFile: "test-bfs" }));
 }
 
 describe("extractBusinessFunction — reuse", () => {

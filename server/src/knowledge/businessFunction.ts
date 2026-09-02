@@ -78,6 +78,8 @@ export function extractBusinessFunctions(args: {
    * than rebuilt beside itself.
    */
   existingFlows?: FlowRecord[];
+  /** Basename (no extension) of the grouped file a newly-lifted flow belongs in — see session.ts's categorySlug. */
+  categoryFile: string;
 }): Extraction | null {
   const blocks = itBlocks(args.spec);
   if (blocks.length === 0) return null;
@@ -87,7 +89,13 @@ export function extractBusinessFunctions(args: {
   const rewrites: Array<{ start: number; end: number; body: string }> = [];
 
   for (const block of blocks) {
-    const lifted = liftBlock({ block, pages: args.pages, language: args.language, existingFlows: known });
+    const lifted = liftBlock({
+      block,
+      pages: args.pages,
+      language: args.language,
+      existingFlows: known,
+      categoryFile: args.categoryFile,
+    });
     if (!lifted) continue;
 
     flows.push(lifted.flow);
@@ -122,6 +130,7 @@ function liftBlock(args: {
   pages: PageFact[];
   language: ProjectLanguage;
   existingFlows: FlowRecord[];
+  categoryFile: string;
 }): { flow: ExtractedFlow; body: string } | null {
   const { block } = args;
 
@@ -169,6 +178,10 @@ function liftBlock(args: {
     return {
       flow: {
         name: match.flow.name,
+        // Unused: source is null, so liftIntoFlow's write loop never reaches
+        // this flow's `.file` at all. Left as the flow's own name rather than
+        // `match.flow.file` (which, unlike this field, includes the extension)
+        // to avoid a confusing basename/extension mismatch for a dead value.
         file: match.flow.name,
         source: null,
         callSequence,
@@ -196,7 +209,7 @@ function liftBlock(args: {
   return {
     flow: {
       name,
-      file: name,
+      file: args.categoryFile,
       source: renderFlowModule({
         name,
         title: block.description,
@@ -553,8 +566,11 @@ function renderFlowModule(args: {
   const pageImports = args.pagesUsed
     .map((p) => `import { ${instanceName(p.className)} } from '../pages/${p.className}.js';`)
     .join("\n");
+  // The delegate's own `.file` (from the index) carries its real extension,
+  // e.g. `login-bfs.ts` — always re-suffixed `.js` for the import itself, per
+  // the ESM convention every generated import here follows (see codegen.ts).
   const delegateImport = args.delegate
-    ? `\nimport { ${args.delegate.flow.name} } from './${args.delegate.flow.name}.js';`
+    ? `\nimport { ${args.delegate.flow.name} } from './${args.delegate.flow.file.replace(/\.(ts|js)$/, "")}.js';`
     : "";
 
   // Ahead of the function and its doc comment, so the comment documents the
@@ -701,13 +717,18 @@ function rebuildImports(spec: string, flows: ExtractedFlow[], pages: PageFact[])
 
   // Flows this run lifted, plus any the file already called — a scenario
   // lifted by an earlier run is not in `flows`, and dropping its import would
-  // leave the spec calling a function it no longer imports.
-  const names = new Set(flows.map((f) => f.name));
-  for (const [, existing] of spec.matchAll(/import\s*\{\s*(\w+)\s*\}\s*from\s*'\.\.\/\.\.\/src\/flows\/\w+\.js'/g)) {
-    if (new RegExp(`\\b${escapeRegExp(existing!)}\\s*\\(`).test(body)) names.add(existing!);
+  // leave the spec calling a function it no longer imports. Grouped files
+  // mean a flow's module isn't necessarily named after the function itself
+  // (see session.ts's categorySlug), so the file each name actually lives in
+  // has to be tracked alongside it rather than assumed.
+  const fileByName = new Map(flows.map((f) => [f.name, f.file]));
+  // The file portion allows hyphens (`[\w-]+`, not `\w+`) - a grouped file's
+  // basename is a category slug like `login-bfs`, not a bare identifier.
+  for (const [, existing, file] of spec.matchAll(/import\s*\{\s*(\w+)\s*\}\s*from\s*'\.\.\/\.\.\/src\/flows\/([\w-]+)\.js'/g)) {
+    if (new RegExp(`\\b${escapeRegExp(existing!)}\\s*\\(`).test(body)) fileByName.set(existing!, fileByName.get(existing!) ?? file!);
   }
 
-  const lines = [...names].map((name) => `import { ${name} } from '../../src/flows/${name}.js';`);
+  const lines = [...fileByName.entries()].map(([name, file]) => `import { ${name} } from '../../src/flows/${file}.js';`);
 
   for (const page of pages) {
     const instance = instanceName(page.className);

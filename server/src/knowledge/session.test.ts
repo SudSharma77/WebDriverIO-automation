@@ -208,12 +208,12 @@ describe("recordSuccess — business functions", () => {
     assert.equal(report.flow?.applied, true);
     assert.deepEqual(report.flow?.names, ["logIn"]);
 
-    const flow = await readFile(project, "src/flows/logIn.ts");
+    const flow = await readFile(project, "src/flows/home-bfs.ts");
     assert.match(flow, /export async function logIn/);
     assert.match(flow, /await homePage\.clickSignInButton\(\);/);
 
     const spec = await readFile(project, `test/specs/${report.specFile}`);
-    assert.match(spec, /import \{ logIn \} from '\.\.\/\.\.\/src\/flows\/logIn\.js';/);
+    assert.match(spec, /import \{ logIn \} from '\.\.\/\.\.\/src\/flows\/home-bfs\.js';/);
     assert.doesNotMatch(spec, /#email|#password|#go/, "a selector survived in the spec");
   });
 
@@ -236,7 +236,7 @@ describe("recordSuccess — business functions", () => {
     const manifest = await readFile(project, "src/manifest.yaml");
     // Kebab from the camelCase export — `logIn`, not `login`.
     assert.match(manifest, /- id: "log-in"/);
-    assert.match(manifest, /path: "src\/flows\/logIn\.ts"/);
+    assert.match(manifest, /path: "src\/flows\/home-bfs\.ts"/);
     assert.match(manifest, /export: "logIn"/);
   });
 
