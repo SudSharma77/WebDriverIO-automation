@@ -304,12 +304,17 @@ export async function dismissIfPresent(selector: string, options: FindOptions = 
 
   if (!(await isVisible(selector, { timeout }))) return false;
 
-  const element = await $(selector);
-  await element.click();
+  await (await $(selector)).click();
 
-  // A banner that animates out still intercepts clicks while it fades.
+  // A banner that animates out still intercepts clicks while it fades, so we
+  // wait for it to actually go. Delegated to `waitForGone` rather than
+  // `element.waitForDisplayed({ reverse: true })` on the handle above: a banner
+  // that is *removed* from the DOM on dismiss (rather than hidden) makes that
+  // handle stale, and a stale reference throws here instead of reading as
+  // "gone". `waitForGone` re-queries the selector each poll, so a detached node
+  // is simply not found.
   try {
-    await element.waitForDisplayed({ timeout, reverse: true });
+    await waitForGone(selector, { timeout });
   } catch {
     throw new Error(
       `Clicked ${label ?? selector} but it is still on screen after ${timeout}ms. ` +
@@ -351,11 +356,31 @@ export function check(description: string, result: boolean): boolean {
   return result;
 }
 
-/** Wait for something to disappear — a spinner, a modal, a toast. */
+/**
+ * Wait for something to disappear — a spinner, a modal, a cookie banner, a toast.
+ *
+ * Re-queries the selector on every poll rather than holding one element
+ * reference: the thing being waited on is, by definition, on its way out, and
+ * an app that removes it from the DOM (rather than hiding it with CSS) turns a
+ * cached handle stale — `waitForDisplayed({ reverse: true })` on a detached
+ * node throws instead of reading as "not displayed". A selector that no longer
+ * resolves at all — detached, or a form that only became invalid once the DOM
+ * changed under it — counts as gone, the same way `isVisible` treats an
+ * unresolvable selector as not visible.
+ */
 export async function waitForGone(selector: string, options: { timeout?: number } = {}): Promise<void> {
   const { timeout = DEFAULT_TIMEOUT } = options;
-  const element = await $(selector);
-  await element.waitForDisplayed({ timeout, reverse: true });
+  await browser.waitUntil(
+    async () => {
+      try {
+        const element = await $(selector);
+        return !(await element.isExisting()) || !(await element.isDisplayed());
+      } catch {
+        return true;
+      }
+    },
+    { timeout, timeoutMsg: `"${selector}" was still on screen after ${timeout}ms.` },
+  );
 }
 
 /**
