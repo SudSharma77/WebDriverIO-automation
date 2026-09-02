@@ -13,7 +13,12 @@ import { Reviews } from "./Reviews";
  * as it did before this existed, saving locally under `clients/<id>/`. This
  * tab is only for the clients that should also get pushed to a real repo.
  */
-export function Clients() {
+interface Props {
+  /** Per-client pending-review counts, already fetched by the app shell for the banner - passed down rather than re-fetched here. */
+  pendingReviews?: Array<{ clientId: string; clientName: string; count: number }>;
+}
+
+export function Clients({ pendingReviews }: Props) {
   const [clients, setClients] = useState<ClientRecord[] | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -69,7 +74,9 @@ export function Clients() {
         </p>
       ) : (
         <ul className="clients__list">
-          {clients.map((client) => (
+          {clients.map((client) => {
+            const pending = pendingReviews?.find((p) => p.clientId === client.id)?.count ?? 0;
+            return (
             <li key={client.id} className="clients__row">
               <button
                 type="button"
@@ -82,6 +89,11 @@ export function Clients() {
                 <span className="clients__repo-status" data-tone={repoTone(client)}>
                   {repoLabel(client)}
                 </span>
+                {pending > 0 && (
+                  <span className="clients__repo-status" data-tone="warn">
+                    {pending} pending review{pending === 1 ? "" : "s"}
+                  </span>
+                )}
               </button>
               {expanded === client.id && (
                 <>
@@ -97,7 +109,8 @@ export function Clients() {
                 </>
               )}
             </li>
-          ))}
+            );
+          })}
         </ul>
       )}
     </section>

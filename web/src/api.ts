@@ -234,6 +234,16 @@ export async function fetchReviews(clientId: string): Promise<ReviewRequest[]> {
   return reviews;
 }
 
+export interface PendingReviews {
+  total: number;
+  clients: Array<{ clientId: string; clientName: string; count: number }>;
+}
+
+/** Cross-client summary, so the app can point someone at what needs review without them knowing which client to check. */
+export async function fetchPendingReviews(): Promise<PendingReviews> {
+  return parse<PendingReviews>(await fetch("/api/reviews/pending"));
+}
+
 export async function fetchReview(clientId: string, reviewId: string): Promise<{ review: ReviewRequest; diff: string | null }> {
   const res = await fetch(`/api/clients/${encodeURIComponent(clientId)}/reviews/${encodeURIComponent(reviewId)}`);
   return parse<{ review: ReviewRequest; diff: string | null }>(res);

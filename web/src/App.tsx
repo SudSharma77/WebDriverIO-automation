@@ -6,10 +6,12 @@ import {
   createRun,
   extendRun,
   fetchCapabilities,
+  fetchPendingReviews,
   fetchRun,
   reverifyLane,
   type CreateBatchBody,
   type CreateRunBody,
+  type PendingReviews,
 } from "./api";
 import { BatchResults } from "./components/BatchResults";
 import { BatchUpload } from "./components/BatchUpload";
@@ -18,6 +20,7 @@ import { Composer } from "./components/Composer";
 import { History } from "./components/History";
 import { LaneCard } from "./components/LaneCard";
 import { Lightbox } from "./components/Lightbox";
+import { PendingReviewsBanner } from "./components/PendingReviewsBanner";
 import type { LaneStatus, ServerCapabilities } from "./types";
 import { useRun } from "./useRun";
 
@@ -40,6 +43,7 @@ export default function App() {
   const [mode, setMode] = useState<Mode>("single");
   const [batchId, setBatchId] = useState<string | null>(null);
   const [batchSubmitting, setBatchSubmitting] = useState(false);
+  const [pendingReviews, setPendingReviews] = useState<PendingReviews>({ total: 0, clients: [] });
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -49,6 +53,20 @@ export default function App() {
   // without the user needing to reload the page.
   useEffect(() => {
     if (run?.finishedAt) setHistoryRefresh((n) => n + 1);
+  }, [run?.finishedAt]);
+
+  // Polled, not just fetched once: a review can be created by a run started
+  // from a different session, and the person meant to act on it may have this
+  // tab open without ever having triggered a run themselves.
+  useEffect(() => {
+    const load = () => void fetchPendingReviews().then(setPendingReviews).catch(() => undefined);
+    load();
+    const interval = setInterval(load, 60_000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (run?.finishedAt) void fetchPendingReviews().then(setPendingReviews).catch(() => undefined);
   }, [run?.finishedAt]);
 
   const openHistoryRun = useCallback(
@@ -253,7 +271,7 @@ export default function App() {
               }}
             />
           )}
-          {mode === "clients" && <Clients />}
+          {mode === "clients" && <Clients pendingReviews={pendingReviews.clients} />}
         </div>
 
         <main className="stage">
@@ -283,6 +301,7 @@ export default function App() {
               CLOUD_PROVIDER and its credentials in .env to enable the iOS lane.
             </p>
           )}
+          <PendingReviewsBanner pending={pendingReviews} onReview={() => setMode("clients")} />
 
           {mode === "bulk" && batchId ? (
             <BatchResults batchId={batchId} onOpenRun={openBatchRun} />

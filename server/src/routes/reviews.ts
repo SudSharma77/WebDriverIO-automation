@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { getClient, recordSyncResult, requiresReview } from "../knowledge/clients.js";
+import { getClient, listClients, recordSyncResult, requiresReview } from "../knowledge/clients.js";
 import { pushApproved, revertCommit, showCommit, UPDATE_BRANCH } from "../knowledge/git.js";
 import { ensureProject, projectFor } from "../knowledge/project.js";
 import { getReview, listReviews, updateReview } from "../knowledge/reviews.js";
@@ -21,6 +21,23 @@ const Decision = z.object({
 });
 
 export async function registerReviewRoutes(app: FastifyInstance): Promise<void> {
+  // Cross-client summary, so a reviewer never has to know in advance which
+  // client's tab to check - the sidebar banner asks this once instead of the
+  // per-client route above being called once per onboarded client.
+  app.get("/api/reviews/pending", async () => {
+    const clients = (await listClients()).filter((c) => c.repo);
+
+    const counted = await Promise.all(
+      clients.map(async (client) => {
+        const pending = (await listReviews(projectFor(client.id))).filter((r) => r.status === "pending");
+        return { clientId: client.id, clientName: client.name, count: pending.length };
+      }),
+    );
+
+    const withPending = counted.filter((c) => c.count > 0);
+    return { total: withPending.reduce((sum, c) => sum + c.count, 0), clients: withPending };
+  });
+
   app.get<{ Params: { id: string } }>("/api/clients/:id/reviews", async (request, reply) => {
     const parsed = ClientId.safeParse(request.params.id);
     if (!parsed.success) return reply.status(400).send({ error: "invalid_client" });
